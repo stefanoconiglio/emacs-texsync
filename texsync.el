@@ -114,6 +114,11 @@ height of the source window."
 (defvar-local texsync--master nil
   "Cached absolute name of the main file of this buffer.")
 
+(defvar-local texsync-follow t
+  "Non-nil: the PDF and the source follow each other in this buffer's document.
+Toggle with \\[texsync-toggle-follow]; compiling, \\[texsync-view] and ctrl+click
+work either way.")
+
 (defvar texsync--timer nil
   "The pending sync, in either direction: the window acted on last leads.")
 (defvar-local texsync--idle-timer nil)
@@ -692,7 +697,8 @@ Emacs scrolls it without selecting it."
          (buf (and (window-live-p win) (window-buffer win))))
     (when buf
       (cond ((buffer-local-value 'texsync-mode buf)
-             (texsync--schedule #'texsync--sync-from win))
+             (when (buffer-local-value 'texsync-follow buf)
+               (texsync--schedule #'texsync--sync-from win)))
             ((and (buffer-local-value 'texsync-pdf-mode buf)
                   (not (memq this-command texsync--jump-commands))
                   (not (eq (car-safe last-input-event) 'mouse-movement))
@@ -704,10 +710,11 @@ Emacs scrolls it without selecting it."
 ;;;; The PDF leads
 
 (defun texsync--source-window (pdf)
-  "A window of the selected frame with a texsync source whose PDF is PDF."
+  "A window of the selected frame with a texsync source whose PDF is PDF.
+Only sources that follow (`texsync-follow') count."
   (cl-find-if (lambda (w)
                 (with-current-buffer (window-buffer w)
-                  (and texsync-mode
+                  (and texsync-mode texsync-follow
                        (when-let* ((m (texsync-master-file)))
                          (equal (texsync--pdf-file m) pdf)))))
               (window-list nil 'nomini)))
@@ -987,7 +994,7 @@ A request while a compile runs queues one more run after it."
 (defun texsync--resync (master)
   "Sync the selected window again if it shows a source of MASTER."
   (with-current-buffer (window-buffer (selected-window))
-    (when (and (bound-and-true-p texsync-mode)
+    (when (and (bound-and-true-p texsync-mode) texsync-follow
                (equal (texsync-master-file) master))
       (setq texsync--last nil)
       (condition-case err
@@ -1030,14 +1037,58 @@ A request while a compile runs queues one more run after it."
 
 ;;;; Mode
 
+(defun texsync--document-buffers (pdf)
+  "The texsync source buffers whose PDF is PDF."
+  (cl-remove-if-not (lambda (b)
+                      (with-current-buffer b
+                        (and (bound-and-true-p texsync-mode)
+                             (when-let* ((m (texsync-master-file)))
+                               (equal (texsync--pdf-file m) pdf)))))
+                    (buffer-list)))
+
+(defun texsync-toggle-follow (&optional arg)
+  "Switch the PDF and the source following each other off or on.
+For the whole document of the current buffer: all its source files, from
+a source buffer or from its PDF.  Without ARG, toggle; with ARG, on if
+it is positive, off otherwise.
+Compiling, \\[texsync-view] and ctrl+click work either way; switching it
+back on brings the PDF to the place of point."
+  (interactive "P")
+  (let* ((pdf (cond ((bound-and-true-p texsync-mode)
+                     (texsync--pdf-file (or (texsync-master-file)
+                                            (user-error "texsync: no main file"))))
+                    ((bound-and-true-p texsync-pdf-mode) (buffer-file-name))
+                    (t (user-error "texsync: not a texsync source or PDF buffer"))))
+         (bufs (texsync--document-buffers pdf))
+         (on (if (memq arg '(nil toggle))
+                 (not (and bufs (buffer-local-value 'texsync-follow (car bufs))))
+                 (> (prefix-numeric-value arg) 0))))
+    (dolist (b bufs)
+      (with-current-buffer b
+        (setq texsync-follow on
+              texsync--last nil)))
+    (when (timerp texsync--timer) (cancel-timer texsync--timer))
+    (force-mode-line-update t)
+    (when on
+      (when-let* ((w (texsync--source-window pdf)))
+        (with-selected-window w (texsync-sync))))
+    (message "texsync: following %s%s" (if on "on" "off")
+             (if on "" " (M-x texsync-toggle-follow to switch it back on)"))
+    on))
+
 ;;;###autoload
 (define-minor-mode texsync-mode
   "Keep the PDF of this LaTeX file in step with point.
 
-Moving or scrolling in the source moves the PDF; AUCTeX's View
-\(\\[TeX-view]) or \\[texsync-view] shows it.  Ctrl+click in the PDF goes
-back.  Saving, or pausing after an edit, compiles with latexmk."
-  :lighter " Sync"
+Moving or scrolling in the source moves the PDF, and the other way
+round; AUCTeX's View (\\[TeX-view]) or \\[texsync-view] shows it.
+Ctrl+click in the PDF goes back.  Saving, or pausing after an edit,
+compiles with latexmk.  \\[texsync-toggle-follow] pauses the following
+both ways (the mode line then says Sync:off); turning this mode off
+stops everything, compiling included, in this buffer."
+  :lighter (:eval (if texsync-follow " Sync" " Sync:off"))
+  ;; empty: C-c + letter is the user's (e.g. C-c t for `texsync-toggle-follow')
+  :keymap (make-sparse-keymap)
   (if texsync-mode
       (progn
         (setq texsync--master nil

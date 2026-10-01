@@ -240,5 +240,38 @@ asks SyncTeX nothing: answers are remembered until the PDF changes."
     (pdf-info-close pdf)
     (delete-directory dir t)))
 
+(ert-deftest texsync-test-toggle-follow ()
+  "`texsync-toggle-follow' pauses the following for every file of the document."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (main (expand-file-name "paper/main.tex" dir))
+         (sec (expand-file-name "paper/sec.tex" dir))
+         (bufs (mapcar (lambda (f) (let ((large-file-warning-threshold nil))
+                                     (find-file-noselect f)))
+                       (list main sec))))
+    (unwind-protect
+        (progn
+          (dolist (b bufs) (with-current-buffer b (texsync-mode 1)))
+          (with-current-buffer (cadr bufs)
+            (should (eq (texsync-toggle-follow) nil))
+            (should-not (cl-some (lambda (b) (buffer-local-value 'texsync-follow b)) bufs))
+            ;; the mode line's lighter, (:eval ...); format-mode-line gives "" in batch
+            (should (equal (eval (cadr (cadr (assq 'texsync-mode minor-mode-alist))) t)
+                           " Sync:off"))
+            ;; a command in a paused source schedules nothing
+            (switch-to-buffer (current-buffer))
+            (setq texsync--timer nil)
+            (texsync--post-command)
+            (should-not texsync--timer)
+            (should (eq (texsync-toggle-follow) t))
+            (should (cl-every (lambda (b) (buffer-local-value 'texsync-follow b)) bufs))
+            (texsync--post-command)
+            (should (timerp texsync--timer))
+            (cancel-timer texsync--timer)
+            ;; and with an argument: off whatever the state
+            (texsync-toggle-follow -1)
+            (should-not (buffer-local-value 'texsync-follow (car bufs)))))
+      (dolist (b bufs) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b))
+      (delete-directory dir t))))
+
 (provide 'texsync-test)
 ;;; texsync-test.el ends here

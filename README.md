@@ -47,6 +47,25 @@ Then `C-c C-v`. Your own init file is not loaded.
 For a file `\input` by a main file in another directory, set `TeX-master` (texsync guesses it
 only when exactly one file in the same directory inputs it).
 
+## What it is, and switching it off
+
+Two minor modes; the major modes stay AUCTeX's LaTeX mode and pdf-tools' PDF view.
+
+- `texsync-mode`, in a `.tex` buffer (the setup below turns it on in graphical Emacs). The
+  mode line shows **Sync**, or **Sync:off** while following is paused.
+- `texsync-pdf-mode`, turned on by texsync in the PDF buffer it shows: ctrl+click and
+  double-click jump to the source.
+
+Two ways to stop it:
+
+- **`M-x texsync-toggle-follow`** pauses the following, both ways, for the whole document (all
+  its files), from a source buffer or from the PDF. Compiling, `C-c C-v` and ctrl+click keep
+  working. Run it again to resume: the PDF then jumps to the place of point. With a prefix
+  argument it switches on (positive) or off (zero or negative). It has no key of its own; bind
+  one if you use it often, e.g. `(keymap-set texsync-mode-map "C-c t" #'texsync-toggle-follow)`.
+- **`M-x texsync-mode`** turns texsync off in that buffer altogether: no following, no
+  compiling on save or pause, and AUCTeX's View goes back to your usual viewer.
+
 ## Options
 
 `M-x customize-group RET texsync`:
@@ -60,7 +79,7 @@ only when exactly one file in the same directory inputs it).
 - `texsync-structural-line-regexp`, `texsync-search-radius`: lines skipped when looking for a
   position.
 
-Commands: `texsync-view`, `texsync-sync`, `texsync-compile`.
+Commands: `texsync-view`, `texsync-sync`, `texsync-compile`, `texsync-toggle-follow`.
 
 ## Tests
 
