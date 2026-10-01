@@ -1,0 +1,247 @@
+# Research log
+
+## 2026-10-01 08:07 CEST — Smoke test: SyncTeX through pdf-tools in graphical Emacs
+
+**Question.** Can Emacs + pdf-tools give continuous source↔PDF sync: Beamer frame ↔ slide, and paper
+scroll ↔ scroll? Do the SyncTeX answers that pdf-tools returns land in the right places?
+
+**Setting.** Emacs 31.1 (pgtk, Wayland/Hyprland), pdf-tools 20260102 (epdfinfo on poppler 26.08),
+TeX Live latexmk `-pdf -synctex=1 -outdir=build`. Two of the user's documents, copied to a scratch
+folder (sources unchanged):
+- a 73-slide Beamer lecture deck (1781 lines, one page per frame, no overlays, two `[fragile]` frames);
+- a 7-page two-column paper split over six `\input` files.
+
+**What was done.** Scripts in `smoke-test/`:
+- `dump.el` (batch Emacs): forward search on every source line, backward search on a 9-point
+  vertical grid per page, all through `pdf-info-synctex-forward-search` / `-backward-search`.
+- `check_deck.py`: ground truth independent of SyncTeX — a frame's page is the page whose
+  `pdftotext` contains the frame title (unique for 56 of 65 source frames).
+- `check_paper.py`: puts lines in reading order (following `\input`) and counts where the PDF
+  position moves backwards; column-aware rerun inline.
+- `gui-init.el`, `smoke-sync.el`: graphical Emacs (`emacs -Q`, unit `latexsync-smoke`), source left,
+  PDF right, frame-level forward sync; continuous mode (`pdf-view-roll-minor-mode`) on the paper.
+
+**Results.**
+- Build time: deck 9.5 s (full latexmk run), paper 1.5 s.
+- Query cost: deck ≈ 22 ms per SyncTeX query (55 s for ~2400 queries), paper ≈ 8 ms.
+- Deck, line-level forward search: 744 / 1374 in-frame lines land on the right slide; 0 / 56 frames
+  are right on every line. Cause: Beamer collects the frame body and typesets it at `\end{frame}`, so
+  every record of a frame sits on its `\end{frame}` line. Lines in the upper part of a frame have no
+  record and snap to the nearest recorded line, the previous frame's `\end{frame}` → one slide early.
+- Deck, frame-level forward search (query the enclosing frame's `\end{frame}` line): 56 / 56 right,
+  including both fragile frames. Confirmed in the GUI: cursor lines 40, 60, 150, 1380, 1420 →
+  slides 4, 5, 7, 57, 58, read back from `pdf-view-current-page`.
+- Deck, backward search: 491 / 504 grid points return exactly the frame's `\end{frame}` line; the
+  other 13 (the fragile frames) return lines of the `.vrb` temporary file.
+- Paper, forward search: 522 / 528 lines get a position. Column-aware, the PDF position moves
+  backwards 15 times; each is a single structural line (`\end{eqnarray}`, `\end{equation*}`,
+  `\input`, `\end{subequations}`) mapped to the top of a page — isolated outliers.
+- Paper, continuous mode: scrolling to (page 4, y 0.618) for a line that starts a block of
+  equations put those equations at the top of the PDF pane; pages 4 and 5 visible together.
+
+**Problems seen.**
+- Opening the 17 MB deck PDF triggers Emacs's large-file prompt (`large-file-warning-threshold`,
+  10 MB). The package must not prompt for PDFs.
+- `Wrong type argument: window-live-p, #<window 3>` in the echo area after I deleted and re-split
+  the windows to swap the PDF pane (window 3 was one I deleted). Source not identified: no backtrace
+  taken; pdf-view and pdf-roll both keep per-window state.
+- Rendering looks slightly soft on the HiDPI screen; check `pdf-view-use-scaling`.
+
+**Conclusions.**
+- Beamer: sync by frame, not by line. Parse frames from the source; forward = enclosing frame's
+  `\end{frame}` line; backward = page → frame through a page→frame table built after each compile
+  (covers fragile frames, whose backward search points into `.vrb`).
+- Papers: line-level forward search is usable for scroll sync once structural lines are skipped or
+  outliers filtered (e.g. median over the lines in view). Two-column layouts make "next" positions
+  jump to the top of the right column; that is correct, not a glitch.
+- Queries are cheap enough for one per scroll pause (debounced), not one per scroll event; a table
+  built once per compile avoids per-scroll queries entirely.
+
+**Gaps in the deck check.** The 56 / 56 excludes 9 source frames whose title was missing or
+matched 0 or several pages (repeated-title continuation slides among them), and the 8 pages made by
+macros (title page, section pages); backward sync from those pages is untested.
+
+**Open.** Beamer overlays (this deck has none). Every overlay of a frame is typeset from the same
+`\end{frame}` line, so SyncTeX cannot tell which overlay a cursor line belongs to. First or last
+overlay is easy (`.nav` has `\beamer@framepages{a}{b}` per frame); "the overlay the cursor is in"
+needs counting `\pause` / `<n->` in the source, a heuristic. Test on a deck with overlays; the
+choice is the user's. Continuous vs click-only PDF → source for papers: still the user's call.
+Running graphical Emacs instead of `emacs -nw`: the user agreed to try it.
+
+## 2026-10-01 08:14 CEST — Decision: PDF → source only on click
+
+**Decision (user).** For papers, scrolling the PDF does not move the source; the source jumps only
+when the user clicks in the PDF. Source → PDF stays automatic (the PDF follows the cursor and
+scrolling in the source).
+
+## 2026-10-01 08:31 CEST — Decision refined: automatic source → PDF scroll, ctrl+click back
+
+**Decision (user).** The must-have is the automatic scroll from source to PDF. PDF → source by
+ctrl+click is fine (pdf-sync already binds `C-mouse-1` and
+`double-mouse-1`), replacing the plain click I had proposed after the 08:14 entry.
+
+**Seen.** In the `emacs -Q` test window, `C-c C-c View` from `lp.tex` opened GNOME's Document
+Viewer on a missing `lp.pdf`: no config (no `TeX-output-dir`, no viewer), and `lp.tex` has no
+master, so AUCTeX took it as its own master.
+
+## 2026-10-01 09:04 CEST — texsync 0.1: automatic source → PDF sync in Emacs
+
+**Question.** Does a minor mode on pdf-tools give automatic source → PDF scrolling (Beamer: the
+frame's slide; papers: same height in both windows), ctrl+click back, and compiling on the fly?
+
+**What was done.** `texsync.el` (DESIGN.md has the algorithms), batch tests (`make test`, 8 ERT
+tests on fixtures in `test/fixtures/`) and a scripted graphical run (`make gui-test`, 21 checks,
+keys through `execute-kbd-macro` so the command loop and timers run). Checked by hand in the
+`latexsync-smoke` window (unit `latexsync-smoke`, `emacs -Q`) on the 73-slide deck and the
+two-column paper (scratch copies). A 74-page problem-sheet deck switched from `[handout]` to plain beamer
+confirmed that all overlays of a frame come from its `\end{frame}` line (8 overlays, pages 5–12,
+one source line).
+
+**Results.**
+- `make test`: 8 / 8. `make gui-test`: 21 / 21; the sentence at point and its PDF text are within
+  0.4 px of the same height after cursor motion, two `C-v`s, and an edit → idle save → compile
+  → reload.
+- Real deck, cursor moved by keyboard macro to lines 40, 150, 1380, 1420, 60 → slides 4, 7, 57,
+  58, 5 (all right, 57 and 58 are verbatim frames), no errors logged.
+- Real paper (from an `\input` file, main file guessed): View resolves to texsync (no
+  external viewer). Inserting 13 lines and pausing saved and compiled in 2 s; a sentence
+  moved from line 46 / (p4, y 0.863) to line 59 / (p4, y 0.337),
+  and a text search in the new PDF finds it at (p4, y 0.323, right column): SyncTeX data reload.
+- Ctrl+click on verbatim slides 57 and 58 of the real deck now maps to their frames (lines 1359,
+  1402) through the `.vrb` redirect, in under a second.
+
+**Mistakes and their correction.**
+- `texsync--window-state` read the PDF window's page in the source buffer → `listp, t` after
+  every placement (the page had already moved, so it looked right). Fixed: read it in the PDF
+  buffer.
+- pdf-tools bug: in roll mode its mode-line size indicator measures the selected window and
+  errors on every redisplay when the source window is selected. texsync turns it off there.
+- After a revert, roll mode rebuilds its page overlays at the next redisplay; syncing at once
+  signalled `overlayp, nil` in the process sentinel. Fixed: re-sync on a 0.1 s timer, redisplay
+  first if the overlays are missing.
+- In a bare Emacs `.pdf` opened in doc-view; texsync now switches it to pdf-view-mode.
+- Two GUI-test failures were test bugs (search words cut before the sentence number; moving
+  point without a command, so no sync was triggered), not texsync bugs.
+- My first attempt to read a backtrace sent `(top-level)` through emacsclient, which aborted the
+  reply and hung the client; `pkill -f` on that pattern then killed my own shell. Read the
+  `*Backtrace*` buffer instead.
+
+**Known limitation found.** Page-break artifact: the first line of a paragraph starting right
+after a page break maps to the foot of the previous page (epdfinfo returns only the first of the
+line's records; the first is page-break glue). Once in 60 fixture sentences. Fix would need all
+records (synctex CLI or own `.synctex.gz` parser).
+
+**Decision (Claude, user to confirm).** Default overlay `last` (the complete slide); `first` is
+an option. Key bindings: none of its own (`C-c` + letter is reserved for users); View is
+AUCTeX's `C-c C-v`.
+
+**Open.** The user's own acceptance test (mouse wheel, ctrl+click, real decks). Integration into
+the user's init.el (not done: their config; proposed only in graphical frames, zathura kept for
+`-nw`). `git init` of this folder: asked, unanswered.
+
+## 2026-10-01 09:33 CEST — Ctrl+click did nothing; `C-c C-c` and double compiles
+
+**Report (user).** Only source → PDF worked: in the `texsync-try` window, ctrl+click in the
+PDF did not jump to the source.
+
+**Cause.** pdf-view binds `C-down-mouse-1` to `pdf-view-mouse-extend-region`. Its drag tracker
+(`pdf-util-track-mouse-dragging`) drops the click event from `unread-command-events` as soon as
+one mouse-movement event was seen, so the `C-mouse-1` release that pdf-sync binds never runs
+when the pointer moves during the click (a touchpad). My earlier GUI test called
+`pdf-sync-backward-search` directly and never went through the mouse bindings, so it could not
+see this.
+
+**Fix.** `texsync-pdf-mode` in texsync's PDF buffers: `C-down-mouse-1` and
+`double-down-mouse-1` → `ignore`, `C-mouse-1` and `double-mouse-1` → pdf-sync's jump. Loaded into
+the user's open `texsync-try` window.
+
+**Evidence.** GUI test with real mouse events (`execute-kbd-macro` of press / movement / release):
+without the mode a ctrl+click with a 2 px wobble stays in the PDF; with it, held still and with
+the wobble, point lands on the clicked sentence's line ("Paragraph 4 sentence 2").
+
+**Also checked.**
+- `C-c C-c View` (which had opened an external viewer on a missing PDF) now reaches
+  `texsync-view`.
+- `C-c C-c LaTeX` saved the buffer, which also triggered texsync's latexmk, while AUCTeX started
+  its own run into the same `build/`. Fix: compile-on-save waits 0.3 s and defers while
+  `TeX-process` of the main file is alive. GUI check: AUCTeX ran, texsync ran after, never both.
+- `make gui-test` 26 / 26 on two consecutive runs; `make test` 8 / 8.
+
+**Mistakes.**
+- `pkill -f` with a pattern contained in my own command line killed my shell — the second time
+  today. Use `pgrep -af '^/usr/bin/emacs …'` and kill by PID.
+- `backtrace-to-string` is not loaded in `emacs -Q` (needs `(require 'backtrace)`); the test's
+  error handler failed and the test never exited.
+- Test helper called `pdf-view-image-size` from the source buffer (same class as the
+  `texsync--window-state` bug).
+- Window sizes vary with Hyprland tiling (a 466 px tile when another Emacs was open): checks now
+  allow a PDF pinned at page 1 and `C-v` reaching the end of the buffer.
+
+## 2026-10-01 11:35 CEST — Bidirectional sync: the PDF can lead
+
+**Report and decision (user).** Scrolling the PDF snapped it back to the source's position;
+the user asked for sync in both directions, keeping ctrl+click. This replaces the 08:14 decision
+(PDF → source only on click): scrolling the PDF now moves the source.
+
+**Cause of the snap-back.** A wheel scroll over the PDF runs `mwheel-scroll` with the source
+window still selected, so the source buffer's `post-command-hook` scheduled a source-led sync,
+and `texsync--place` re-placed the PDF because its state had changed.
+
+**What was done.** One global `post-command-hook` picks the leader: the window the command acted
+on (under the pointer for mouse events). PDF leads only when its page/vscroll changed since the
+last sync and the command is not a jump/pass-through (pdf-sync jump, `ignore`, pdf-tools'
+image-map proxy, undefined key, pointer motion). PDF → source: Beamer → frame of the slide;
+papers → anchor at 1/3 of the PDF window → `texsync--source-at` (backward search, structural
+lines rejected, forward search must start on the page at or above the height tried; fallback to
+a line starting on the page before) → line shown at the height where its text starts. Page
+heights from `pdf-view-desired-image-size`. `window-scroll-functions` dropped.
+
+**Results.** `make gui-test` 32 / 32 on the last three consecutive runs (earlier runs of the new
+code had test-harness failures, below); `make test` 8 / 8. Wheel over the PDF: PDF stays, focus
+stays in the source, point's line starts within 10 px of its PDF text.
+
+**Found on the way (real bugs).**
+- Clicks on text arrive with the image-map area `pdf-view-text-region` and go through pdf-tools'
+  proxy command; that proxy command would have scheduled a PDF-led sync that overrides the
+  ctrl+click jump 0.15 s later. Fixed (proxy in the pass-through list; the jump cancels pending
+  syncs).
+- `texsync--point-fraction` returned nil when point's long wrapped line began above the window
+  start, so nothing synced. Fixed (measure from the first visible part of the line).
+- Asking pdf-roll for the image size of an undrawn page signals "Invalid image specification".
+  Fixed (sizes from `pdf-view-desired-image-size`).
+- In a margin at the top of a page, backward search returned a blank line of `main.tex` (page
+  head records); validation now rejects such answers.
+
+**Mistakes.**
+- Test harness: `sit-for` returns early while a window-manager event is pending (the user
+  closing a window), so redisplay was skipped and point measured as invisible; events that
+  pdf-tools re-queues are not run inside a keyboard macro; a first-cut check expected each line
+  to start on the page where it is seen (wrong for a sentence wrapping across a page break).
+- A Python edit script stopped at an assertion and I ran one test round on unchanged code.
+- Negative result, unexplained: in one run "pause after an edit saves and recompiles" failed
+  (no recompile within 30 s). It did not recur in the eight later runs; its cause was not
+  established (the pointer-motion fix came in the same round, but that is not shown to be it).
+- I ran the GUI test (a window, the last ones fullscreen) about a dozen times while the user was
+  working at the same machine. `make gui-test` takes over the screen: run it only when the machine
+  is free (AGENTS.md).
+
+**Open.** The user's own test of PDF → source scrolling (their `texsync-try` window had closed
+before the new code; not reopened). Two-column: the source follows the left column when the PDF
+leads. `git init` and `init.el` integration still unanswered.
+
+## 2026-10-01 12:12 CEST — Accepted; published as texsync
+
+**Result (user).** Tried both directions on a 17-page single-column paper (copy) and a deck:
+accepted; the project is finished for now.
+
+**Decisions (user).** Publish texsync on GitHub, public. The Omarchy theme follower is not part
+of it: `omarchy-follow.el` moved to a separate local repository with the user's Emacs settings
+(not published; that decision is open). `try.el` turns it on only when it is on the load path.
+
+**Decisions (Claude).** Folder renamed from ~/repos/latexeditor to ~/repos/texsync (a link keeps
+the old path). License GPL-3.0-or-later, as Emacs, AUCTeX and pdf-tools. Personal details
+(document names, quotes from the user's text and remarks) removed from this log before
+publishing; measurements and mistakes kept. AGENTS.md added with the working rules.
+
+**State.** `make test` 8 / 8; `make gui-test` 32 / 32 on its last three runs (not rerun after
+the split: it takes over the screen). Known limitations: DESIGN.md.
