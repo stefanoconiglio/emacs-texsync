@@ -1,0 +1,74 @@
+# texsync
+
+Emacs minor mode: LaTeX source on the left, its PDF (pdf-tools) on the right, kept in step.
+
+- Move or scroll in the source → the PDF follows: Beamer shows the frame's slide, other
+  documents scroll so the line at point is at the same height in both windows.
+- Scroll or page the PDF → the source follows: the frame of the slide, or the line typeset a
+  third of the way down the PDF, at the same height. The window you act on leads.
+- Ctrl+click (or double-click) in the PDF → jump to the exact source.
+- Save, or pause 1.5 s after typing → latexmk compiles into `build/` and the PDF reloads.
+  The pause **saves the file**; `(setq texsync-compile-idle-delay nil)` compiles only when you
+  save. `C-c C-c` is no longer needed (if you use it, texsync waits for AUCTeX's run).
+- `C-c C-v` (AUCTeX View) opens the PDF window at the place of point.
+
+Needs graphical Emacs (not `emacs -nw`), [pdf-tools](https://github.com/vedang/pdf-tools)
+with continuous scrolling (`pdf-roll.el`), AUCTeX and latexmk. Tested with Emacs 31.1 (pgtk,
+Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live. How it works:
+[DESIGN.md](DESIGN.md); what was tried and measured: [RESEARCH_LOG.md](RESEARCH_LOG.md).
+
+## Install
+
+```
+git clone https://github.com/stefanoconiglio/texsync ~/repos/texsync
+```
+
+then the Setup below, with that path.
+
+## Try it
+
+```
+/usr/bin/emacs -Q -l ~/repos/texsync/try.el FILE.tex
+```
+
+Then `C-c C-v`. Your own init file is not loaded.
+
+## Setup
+
+```elisp
+(add-to-list 'load-path "~/repos/texsync")  ; your clone
+(require 'texsync)
+(pdf-tools-install :no-query)
+;; texsync in graphical frames; terminal Emacs keeps its usual viewer
+(add-hook 'LaTeX-mode-hook
+          (lambda () (when (display-graphic-p) (texsync-mode 1))))
+```
+
+For a file `\input` by a main file in another directory, set `TeX-master` (texsync guesses it
+only when exactly one file in the same directory inputs it).
+
+## Options
+
+`M-x customize-group RET texsync`:
+
+- `texsync-output-dir` (`"build"`): latexmk's output directory, relative to the main file.
+- `texsync-compile-idle-delay` (1.5 s; nil: compile only on save).
+- `texsync-compile-on-save` (t).
+- `texsync-sync-delay` (0.15 s after the last motion).
+- `texsync-beamer-overlay` (`last`; or `first`): which overlay of a frame to show.
+- `texsync-pdf-anchor` (0.33): height in the PDF window whose text the source follows.
+- `texsync-structural-line-regexp`, `texsync-search-radius`: lines skipped when looking for a
+  position.
+
+Commands: `texsync-view`, `texsync-sync`, `texsync-compile`.
+
+## Tests
+
+```
+make test       # batch ERT tests; compile the fixtures with latexmk
+make gui-test   # takes over the screen (fullscreen Emacs) for about a minute
+```
+
+## License
+
+GPL-3.0-or-later, like Emacs, AUCTeX and pdf-tools. See [LICENSE](LICENSE).
