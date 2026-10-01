@@ -155,14 +155,54 @@ KIND separates different facts about the same file."
 
 (defconst texsync--documentclass-re "^[^%\n]*\\\\documentclass\\(?:\\[[^]]*\\]\\)?{\\([^}]*\\)}")
 
+(defconst texsync--begin-document-re "^[^%\n]*\\\\begin{document}")
+
+(defconst texsync--tex-root-re
+  "^[ \t]*%+[ \t]*!TeX[ \t]+root[ \t]*=[ \t]*\\(.*?\\)[ \t]*$"
+  "The `% !TEX root = FILE' comment of TeXShop, TeXstudio and LaTeX Workshop.")
+
+(defun texsync--tex-file (name dir)
+  "NAME, relative to DIR, as an absolute .tex file name."
+  (let ((f (expand-file-name name dir)))
+    (if (file-name-extension f) f (concat f ".tex"))))
+
+(defun texsync--preamble-inputs (head file)
+  "Files that HEAD, the start of FILE, inputs before \\begin{document}."
+  (let ((end (or (and (string-match texsync--begin-document-re head) (match-beginning 0))
+                 (length head)))
+        (start 0) files)
+    (while (and (string-match "^[^%\n]*\\\\input{[ \t]*\\([^}]+?\\)[ \t]*}" head start)
+                (< (match-beginning 0) end))
+      (let ((f (texsync--tex-file (match-string 1 head) (file-name-directory file))))
+        (when (file-readable-p f) (push f files)))
+      (setq start (match-end 0)))
+    (nreverse files)))
+
 (defun texsync--documentclass (file)
-  "The document class named in FILE, or nil if FILE has no \\documentclass."
+  "The document class of FILE, or nil if it names none.
+A class set in a header that the preamble \\inputs counts too."
   (texsync--cached
    'class file
    (lambda (f)
      (let ((head (texsync--read-head f)))
-       (when (string-match texsync--documentclass-re head)
-         (match-string 1 head))))))
+       (if (string-match texsync--documentclass-re head)
+           (match-string 1 head)
+         (cl-loop for inc in (texsync--preamble-inputs head f)
+                  for h = (texsync--read-head inc)
+                  when (string-match texsync--documentclass-re h)
+                  return (match-string 1 h)))))))
+
+(defun texsync--main-file-p (file)
+  "Non-nil when FILE is a main file: it has a \\documentclass or a \\begin{document}."
+  (texsync--cached
+   'main file
+   (lambda (f)
+     (with-temp-buffer
+       (insert-file-contents f)
+       (goto-char (point-min))
+       (or (re-search-forward texsync--documentclass-re nil t)
+           (progn (goto-char (point-min))
+                  (re-search-forward texsync--begin-document-re nil t)))))))
 
 (defun texsync--inputs-p (main file)
   "Non-nil when MAIN \\input's, \\include's or \\subfile's FILE."
@@ -177,33 +217,43 @@ KIND separates different facts about the same file."
 
 (defun texsync-guess-master (file)
   "The main file of FILE when exactly one candidate exists, else nil.
-A candidate is a .tex file in FILE's directory that has a
-\\documentclass and inputs FILE."
+A candidate is a .tex file in FILE's directory that is a main file
+\(`texsync--main-file-p') and inputs FILE."
   (let ((cands (cl-remove-if-not
                 (lambda (f)
                   (and (not (file-equal-p f file))
-                       (texsync--documentclass f)
+                       (texsync--main-file-p f)
                        (texsync--inputs-p f file)))
                 (directory-files (file-name-directory file) t "\\.tex\\'"))))
     (when (= (length cands) 1)
       (car cands))))
 
 (defun texsync-master-file ()
-  "Absolute name of the main .tex file of the current buffer, or nil."
+  "Absolute name of the main .tex file of the current buffer, or nil.
+In order: a string `TeX-master'; a `% !TEX root = FILE' comment in the
+first lines; the buffer itself if it has a \\documentclass or a
+\\begin{document}; `texsync-guess-master'."
   (or texsync--master
       (setq texsync--master
             (when-let* ((file (buffer-file-name)))
-              (cond
-               ((and (boundp 'TeX-master) (stringp TeX-master))
-                (let ((m (expand-file-name TeX-master (file-name-directory file))))
-                  (if (file-name-extension m) m (concat m ".tex"))))
-               ((save-excursion
+              (let ((dir (file-name-directory file)))
+                (save-excursion
                   (save-restriction
                     (widen)
-                    (goto-char (point-min))
-                    (re-search-forward texsync--documentclass-re nil t)))
-                file)
-               (t (texsync-guess-master file)))))))
+                    (cond
+                     ((and (boundp 'TeX-master) (stringp TeX-master))
+                      (texsync--tex-file TeX-master dir))
+                     ((progn (goto-char (point-min))
+                             (let ((case-fold-search t))
+                               (re-search-forward texsync--tex-root-re
+                                                  (line-end-position 20) t)))
+                      (texsync--tex-file (match-string 1) dir))
+                     ((progn (goto-char (point-min))
+                             (or (re-search-forward texsync--documentclass-re nil t)
+                                 (progn (goto-char (point-min))
+                                        (re-search-forward texsync--begin-document-re nil t))))
+                      file)
+                     (t (texsync-guess-master file))))))))))
 
 (defun texsync--outdir (master)
   "Absolute output directory of MASTER."
@@ -214,8 +264,11 @@ A candidate is a .tex file in FILE's directory that has a
   (expand-file-name (concat (file-name-base master) ".pdf") (texsync--outdir master)))
 
 (defun texsync--beamer-p (master)
-  "Non-nil when MASTER is a Beamer document."
-  (equal (texsync--documentclass master) "beamer"))
+  "Non-nil when MASTER is a Beamer document.
+Its class is beamer, or (class set elsewhere) Beamer wrote a .nav file."
+  (or (equal (texsync--documentclass master) "beamer")
+      (file-exists-p (expand-file-name (concat (file-name-base master) ".nav")
+                                       (texsync--outdir master)))))
 
 (defun texsync--nav-ranges (master)
   "Page ranges (FIRST . LAST) of the frames of MASTER, from its .nav file."

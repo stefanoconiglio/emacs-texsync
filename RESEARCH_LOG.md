@@ -245,3 +245,18 @@ publishing; measurements and mistakes kept. AGENTS.md added with the working rul
 
 **State.** `make test` 8 / 8; `make gui-test` 32 / 32 on its last three runs (not rerun after
 the split: it takes over the screen). Known limitations: DESIGN.md.
+
+## 2026-10-01 14:32 CEST — "Cannot tell the main file" on a lecture with its class in a header
+
+**Report (user, screenshot).** On a lecture deck, texsync said "cannot tell the main file; set
+TeX-master". The deck's first line is `% !TEX root = <itself>.tex`, its second
+`\input{header}`; the `\documentclass[handout,…]{beamer}` is in `header.tex`, and
+`\begin{document}` is in the lecture. All lectures of that course are built this way.
+
+**Fix.** Main file: the `% !TEX root` comment, then a `\begin{document}` as well as a
+`\documentclass` makes a file its own main file. Class: also from the files the preamble
+`\input`s; a `.nav` file in `build/` as the last sign of Beamer.
+
+**Results.** `make test` 10 / 10 (2 new, with a fixture in that shape). On the real deck,
+read-only with its existing build: main file found, class beamer; the frames titled in the
+source map to slides 4, 5, 6, and pdftotext shows those titles on exactly those slides.

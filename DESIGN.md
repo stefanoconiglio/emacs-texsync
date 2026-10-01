@@ -25,8 +25,8 @@ Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-
   `/usr/bin/emacs -Q -l try.el FILE.tex`.
 - `test/texsync-test.el`: batch ERT tests (`make test`), pure functions and real SyncTeX output.
 - `test/gui-test.el`: scripted run in a graphical Emacs (`make gui-test`), through the command loop.
-- `test/fixtures/`: a Beamer deck (overlays, a verbatim frame, a commented-out frame) and a
-  two-file article.
+- `test/fixtures/`: a Beamer deck (overlays, a verbatim frame, a commented-out frame), a
+  two-file article, and a lecture with its class in an `\input` header (`lectures/`).
 - `smoke-test/`: the scripts of the first feasibility test on real documents (RESEARCH_LOG.md,
   2026-10-01 08:07).
 
@@ -49,11 +49,18 @@ Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-
 
 ### Main file
 
-`texsync-master-file`, in order: a string `TeX-master`; the buffer itself if it has a
-`\documentclass`; otherwise the only `.tex` file in the same directory that has a
-`\documentclass` and `\input`s / `\include`s / `\subfile`s this file. With zero or several
-candidates (a header shared by many decks) there is no guess and the user sets `TeX-master`.
-A guess is stored in a buffer-local `TeX-master`, so AUCTeX's own commands agree.
+`texsync-master-file`, in order: a string `TeX-master`; a `% !TEX root = FILE` comment in the
+first 20 lines (the convention of TeXShop, TeXstudio and VS Code's LaTeX Workshop; spaces around
+`=` optional); the buffer itself if it has a `\documentclass` or a `\begin{document}` (a
+lecture whose class sits in an `\input` header is a main file); otherwise the only `.tex` file in
+the same directory that is a main file in that sense and `\input`s / `\include`s /
+`\subfile`s this file. With zero or several candidates (a header shared by many decks) there is
+no guess and the user sets `TeX-master`. A guess is stored in a buffer-local `TeX-master`, so
+AUCTeX's own commands agree.
+
+The document class (to tell Beamer) is read from the main file, or else from the files its
+preamble `\input`s before `\begin{document}` (one level); if neither names it, a `.nav` file in
+`build/` (Beamer writes one) marks a Beamer document.
 
 The PDF is `<dir of main>/build/<main>.pdf`. `texsync-mode` also sets, buffer-locally,
 `TeX-output-dir` and AUCTeX's viewer to `texsync-view`, so `C-c C-v` and `C-c C-c View` show the
@@ -218,7 +225,9 @@ fires on a modified buffer it saves the buffer, and saving compiles
 
 ## Tests
 
-- `make test`: 8 ERT tests. Frame bounds for every line of the fixture deck (including a
+- `make test`: 10 ERT tests. A lecture whose class is in an `\input` header and that names
+  itself with `% !TEX root` (and an `\input` part whose `% !TEX root=` points back): main file,
+  class, Beamer, and each frame's slide, the part's included. Frame bounds for every line of the fixture deck (including a
   commented-out frame); structural lines; candidate order; overlay choice; main-file guess
   (unique, ambiguous, explicit `TeX-master`); compiled fixtures: every line of every frame →
   its slide, for `last` and `first` overlays, page → frame for verbatim redirects; every
