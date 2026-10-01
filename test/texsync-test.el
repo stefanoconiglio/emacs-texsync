@@ -100,6 +100,18 @@
       (should (equal (texsync-master-file) (expand-file-name "deck.tex" dir))))
     (delete-directory dir t)))
 
+(ert-deftest texsync-test-lecture-with-header ()
+  "A lecture whose class is in an \\input header and that names itself with % !TEX root."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (lecture (expand-file-name "lectures/lecture.tex" dir)))
+    (texsync-test--in-file lecture
+      (should (equal (texsync-master-file) lecture)))
+    (texsync-test--in-file (expand-file-name "lectures/part.tex" dir)
+      (should (equal (texsync-master-file) lecture)))   ; `% !TEX root=' without spaces
+    (should (equal (texsync--documentclass lecture) "beamer"))
+    (should (texsync--beamer-p lecture))
+    (delete-directory dir t)))
+
 ;;;; Against real SyncTeX output
 
 (ert-deftest texsync-test-beamer-targets ()
@@ -124,6 +136,24 @@
     ;; page -> frame start, as used for ctrl+clicks on verbatim frames
     (should (equal (mapcar (lambda (p) (texsync-frame-at-page master pdf p)) '(1 2 3 4 5 6 7))
                    '(7 13 13 13 21 28 nil)))
+    (pdf-info-close pdf)
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-lecture-targets ()
+  "The lecture fixture: each frame's lines show its slide, also from the input file."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "lectures/lecture.tex" dir))
+         (pdf (texsync--pdf-file master)))
+    (texsync-test--latexmk master)
+    (texsync-test--in-file master
+      ;; title page from no frame: the first frame is slide 1 (no \\maketitle)
+      (dolist (case '((9 . 1) (16 . 3)))
+        (texsync-test--goto-line (car case))
+        (should (equal (cons (car case) (texsync-beamer-target pdf master)) case))))
+    (texsync-test--in-file (expand-file-name "lectures/part.tex" dir)
+      (texsync-test--goto-line 3)
+      (should (equal (texsync-master-file) master))
+      (should (equal (texsync-beamer-target pdf master) 2)))
     (pdf-info-close pdf)
     (delete-directory dir t)))
 
