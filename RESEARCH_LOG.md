@@ -310,3 +310,28 @@ starts at `\begin{document}`.
 PDF-led sync now *feels* as fast as the source-led one is the user's call: both still wait
 0.15 s after the last motion (`texsync-sync-delay`), and pdf-tools' own scrolling and rendering
 of pages is unchanged.
+
+## 2026-10-01 21:34 CEST — The fix was not loaded; a switch to pause the following
+
+**Report (user).** Section slides still did not sync.
+
+**Cause.** The user edits in the Emacs daemon (frames from "Emacs (Client)"), which had loaded
+texsync before the 21:16 change: `texsync-beamer-source` was not defined in it. Not a code
+problem. Reloaded `texsync.el` into the daemon through `emacsclient` (functions only; nothing
+on screen moved; the old `texsync--redirect-vrb` hook entry removed). Checked there, on the open
+lecture: its 4 `\section` lines → slides 3, 11, 27, 38, its 2 `\subsection` lines → 43, 56,
+and slides 3, 11, 27, 38 → the `\section` lines 89, 259, 642, 896.
+
+**Request (user).** What kind of mode is this, and how to switch it off: sometimes the PDF should
+not track the text, nor the text the PDF.
+
+**Answer and change.** Minor modes (`texsync-mode` in the source, `texsync-pdf-mode` in the
+PDF); turning `texsync-mode` off already stopped both directions, but also compiling and the
+View redirect. Added `texsync-toggle-follow`: pauses both directions for every file of the
+document, from a source or the PDF, and keeps compiling, View and ctrl+click; the lighter shows
+`Sync:off`. `texsync-mode` now has an (empty) keymap so a key can be bound to it. `make test`
+12 / 12 (1 new). Decision (Claude): no default key (`C-c` + letter is the user's).
+
+**Note for next time.** After changing texsync, the running daemon must reload it
+(`emacsclient --eval '(load "~/repos/texsync/texsync.el" nil t)'`) or be restarted; a new
+GUI Emacs is not enough when the user works in daemon frames.

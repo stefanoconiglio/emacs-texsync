@@ -170,6 +170,12 @@ One global `post-command-hook` function, `texsync--post-command`, decides after 
 - Either way one timer (`texsync--timer`) restarts at 0.15 s (`texsync-sync-delay`): the other
   window moves once motion pauses, and the latest leader wins. SyncTeX queries cost 8–22 ms each
   through epdfinfo, which allows one round per pause, not one per scroll step.
+- **Paused documents.** `texsync-follow` (buffer-local, t) gates both directions: a source
+  buffer with it nil schedules nothing, and `texsync--source-window` skips it, so its PDF does
+  not lead either. `texsync-toggle-follow` sets it in every texsync buffer of the same PDF (all
+  files of the document), from a source or from the PDF; switching it back on syncs at once.
+  Compiling, `texsync-view` and ctrl+click ignore it; a recompile does not re-place the PDF of a
+  paused document. The lighter reads `Sync:off` while paused.
 - Programmatic moves run no command, so the follower's move never triggers a sync back.
 - A ctrl+click jump cancels any pending sync and suppresses source-led syncs for 0.5 s.
 - `texsync--place` remembers the last target and the PDF state after placing it, and skips the
@@ -267,7 +273,7 @@ fires on a modified buffer it saves the buffer, and saving compiles
 
 ## Tests
 
-- `make test`: 11 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
+- `make test`: 12 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
   - Pure functions: frame bounds for every line of the fixture deck (a commented-out frame
     included); structural lines; candidate order; overlay choice; main-file guess (unique,
     ambiguous, explicit `TeX-master`); a lecture whose class is in an `\input` header and that
@@ -281,6 +287,8 @@ fires on a modified buffer it saves the buffer, and saving compiles
     that sentence, in reading order, with page-break artifacts counted (≤ one per page break);
     on the references page PDF → source gives the `\bibliography` line with at most two
     backward searches, and a repeated call asks SyncTeX nothing.
+  - Pausing: `texsync-toggle-follow` from one file of the article pauses both files (lighter
+    `Sync:off`), a command then schedules no sync, toggling again resumes, `-1` pauses.
 - `make gui-test`: 32 checks in a graphical `emacs -Q`, fullscreen, keys and mouse events sent
   through `execute-kbd-macro` so that the command loop, `post-command-hook` and timers run as
   for a user. **It takes over the screen for about a minute: run it when the machine is free.**
