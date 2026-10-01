@@ -338,11 +338,92 @@ Search backwards when BACKWARD is non-nil.  Point ends at the match start."
                  append (cl-remove-if-not (lambda (l) (<= 1 l last))
                                           (list (- line d) (+ line d))))))
 
+(defvar texsync--memo (make-hash-table :test 'equal)
+  "PDF -> (MTIME . TABLE): SyncTeX answers for the PDF as last compiled.")
+
+(defun texsync--memoized (pdf key fn)
+  "FN's value for KEY, remembered until PDF changes on disk."
+  (let* ((mtime (file-attribute-modification-time (file-attributes pdf)))
+         (entry (gethash pdf texsync--memo)))
+    (unless (and entry (equal (car entry) mtime))
+      (setq entry (cons mtime (make-hash-table :test 'equal)))
+      (puthash pdf entry texsync--memo))
+    (let ((hit (gethash key (cdr entry) 'none)))
+      (if (not (eq hit 'none))
+          hit
+        (puthash key (funcall fn) (cdr entry))))))
+
 (defun texsync--forward (file line pdf)
   "SyncTeX forward search for LINE of FILE in PDF, or nil."
-  (condition-case nil
-      (pdf-info-synctex-forward-search file line 1 pdf)
-    (error nil)))
+  (texsync--memoized
+   pdf (list 'fwd file line)
+   (lambda ()
+     (condition-case nil
+         (pdf-info-synctex-forward-search file line 1 pdf)
+       (error nil)))))
+
+(defun texsync--master-of-pdf (pdf)
+  "The main .tex file whose PDF is PDF (it sits in `texsync-output-dir')."
+  (let* ((dir (file-name-directory pdf))
+         (out (file-name-as-directory texsync-output-dir))
+         (srcdir (if (string-suffix-p out dir)
+                     (substring dir 0 (- (length dir) (length out)))
+                   dir))
+         (master (expand-file-name (concat (file-name-base pdf) ".tex") srcdir)))
+    (and (file-exists-p master) master)))
+
+(defun texsync--command-line (file regexp)
+  "Line of the first match of REGEXP outside a comment in FILE's body, or nil.
+The body starts at \\begin{document}: a preamble may name the command in
+a definition (an \\AtBeginSection outline, say)."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (texsync--code-search texsync--begin-document-re nil)
+    (when (texsync--code-search regexp nil)
+      (line-number-at-pos))))
+
+(defconst texsync--aux-commands
+  '(("bbl" . "\\\\\\(?:bibliography\\|printbibliography\\)\\_>")
+    ("toc" . "\\\\tableofcontents")
+    ("lof" . "\\\\listoffigures")
+    ("lot" . "\\\\listoftables")
+    ("ind" . "\\\\printindex"))
+  "Files LaTeX writes and reads back, and the command that reads each.")
+
+(defun texsync--aux-source (file pdf page)
+  "The source line for SyncTeX's answer FILE, a file LaTeX wrote, as (FILE . LINE).
+A verbatim Beamer frame (.vrb) is the frame typeset on PAGE; a
+bibliography (.bbl), table of contents (.toc) and the like are the line
+of the command that reads it in the main file's body; in a Beamer
+document, the frame typeset on PAGE.  nil for other files."
+  (when-let* ((master (texsync--master-of-pdf pdf))
+              (ext (file-name-extension file)))
+    (if (or (equal ext "vrb") (texsync--beamer-p master))
+        ;; in Beamer, the frame typeset on PAGE (an outline frame for .toc)
+        (when-let* ((line (texsync-frame-at-page master pdf page)))
+          (cons master line))
+      (when-let* ((re (cdr (assoc ext texsync--aux-commands)))
+                  (line (texsync--command-line master re)))
+        (cons master line)))))
+
+(defun texsync--backward (pdf page x y)
+  "The source of point (X, Y) of PAGE in PDF, as (FILE LINE . FROM-AUX), or nil.
+X and Y are fractions of the page.  An answer in a file LaTeX wrote is
+sent to its source (`texsync--aux-source'), and FROM-AUX is then t."
+  (texsync--memoized
+   pdf (list 'bwd page (round (* 1000 x)) (round (* 1000 y)))
+   (lambda ()
+     (let* ((r (condition-case nil
+                   (pdf-info-synctex-backward-search page x y pdf)
+                 (error nil)))
+            (file (and r (expand-file-name (alist-get 'filename r))))
+            (line (and r (alist-get 'line r))))
+       (cond ((null file) nil)
+             ((and (string-suffix-p ".tex" file) line (> line 0) (file-exists-p file))
+              (cons file (cons line nil)))
+             (t (when-let* ((src (texsync--aux-source file pdf page)))
+                  (cons (car src) (cons (cdr src) t)))))))))
 
 (defun texsync--good-box-p (edges)
   "Non-nil when EDGES look like text, not an empty or page-sized box."
@@ -362,13 +443,37 @@ of the nearest other line."
              when (and r (texsync--good-box-p (alist-get 'edges r)))
              return (cons (alist-get 'page r) (nth 1 (alist-get 'edges r))))))
 
-(defun texsync-beamer-target (pdf master)
-  "The PDF page of the frame around point, or nil outside frames.
-Beamer typesets a frame at its \\end{frame} line, so that is the line
-looked up; `texsync-beamer-overlay' picks the overlay."
-  (when-let* ((fb (texsync-frame-bounds))
-              (r (texsync--forward (buffer-file-name) (cdr fb) pdf)))
+(defconst texsync--sectioning-re
+  "^[ \t]*\\\\\\(?:part\\|section\\|subsection\\|subsubsection\\)\\*?[ \t]*[[{]"
+  "A line that starts a sectioning command.")
+
+(defun texsync--frame-page (file end pdf master)
+  "The page to show for the frame of FILE that ends on line END."
+  (when-let* ((r (texsync--forward file end pdf)))
     (texsync-overlay-page (alist-get 'page r) (texsync--nav-ranges master))))
+
+(defun texsync-beamer-target (pdf master)
+  "The PDF page for point in a Beamer document, or nil.
+In a frame: its slide.  Beamer typesets a frame at its \\end{frame}
+line, so that is the line looked up; `texsync-beamer-overlay' picks the
+overlay.  On a \\section (or \\subsection...) line between frames: the
+slide that line makes (an outline from \\AtBeginSection), if SyncTeX
+puts one there, otherwise the first slide after it.  Other lines
+between frames: nil."
+  (let ((file (buffer-file-name)))
+    (if-let* ((fb (texsync-frame-bounds)))
+        (texsync--frame-page file (cdr fb) pdf master)
+      (when (save-excursion (beginning-of-line) (looking-at-p texsync--sectioning-re))
+        (let* ((line (line-number-at-pos))
+               (r (texsync--forward file line pdf))
+               (page (alist-get 'page r)))
+          (if (and page (equal (texsync--backward pdf page 0.5 0.5) (cons file (cons line nil))))
+              page
+            ;; no slide of its own: the section starts with the next frame
+            (save-excursion
+              (when (texsync--code-search "\\\\begin{frame}" nil)
+                (when-let* ((fb (texsync-frame-bounds)))
+                  (texsync--frame-page file (cdr fb) pdf master))))))))))
 
 (defun texsync-overlay-page (page ranges)
   "The page to show for a frame that SyncTeX puts on PAGE, given frame RANGES."
@@ -638,28 +743,38 @@ a structural line and a forward search of it starts on PAGE at or above
 the height tried: between pages or in a margin, SyncTeX's nearest record
 can belong to any line.  Only if no height gives such a line, a line
 starting on the page before is taken (a long paragraph on one source
-line)."
-  (let (later)
+line), and failing that a structural line (the title's \\maketitle).
+Text from a file LaTeX wrote (the bibliography) is the line of the
+command that reads it, put at the height tried.  Each answer is checked
+once per call; answers are remembered until the PDF changes."
+  (let (later seen structural)
     (or (cl-loop
          for dy in '(0 0.02 -0.02 0.04 -0.04 0.07 -0.07 0.1 -0.1 0.15 -0.15)
          for yy = (+ y dy)
          when (<= 0 yy 1)
-         do (let* ((r (condition-case nil
-                          (pdf-info-synctex-backward-search page 0.25 yy pdf)
-                        (error nil)))
-                   (file (and r (expand-file-name (alist-get 'filename r))))
-                   (line (and r (alist-get 'line r)))
-                   (fw (and file (string-suffix-p ".tex" file) (file-exists-p file)
-                            line (> line 0)
-                            (not (texsync--file-line-structural-p file line))
-                            (texsync--forward file line pdf)))
-                   (p2 (and fw (alist-get 'page fw)))
-                   (y2 (and fw (nth 1 (alist-get 'edges fw)))))
-              (cond ((and fw (eql p2 page) (<= y2 (+ yy 0.05)))
-                     (cl-return (list file line p2 y2)))
-                    ((and fw (eql p2 (1- page)) (null later))
-                     (setq later (list file line p2 y2))))))
-        later)))
+         do (pcase-let* ((src (texsync--backward pdf page 0.25 yy))
+                         (`(,file ,line . ,from-aux) src))
+              (cond
+               ((or (null src) (member src seen)))   ; asked already: skip
+               (from-aux
+                ;; text LaTeX read back from a file it wrote (a bibliography):
+                ;; the command that reads it, at the height tried
+                (cl-return (list file line page yy)))
+               ((texsync--file-line-structural-p file line)
+                (push src seen)
+                ;; \maketitle, a lone \end{...}: only if nothing better turns up
+                (unless structural (setq structural (list file line page yy))))
+               (t
+                (push src seen)
+                (let* ((fw (texsync--forward file line pdf))
+                       (p2 (and fw (alist-get 'page fw)))
+                       (y2 (and fw (nth 1 (alist-get 'edges fw)))))
+                  (cond ((and fw (eql p2 page) (<= y2 (+ yy 0.05)))
+                         (cl-return (list file line p2 y2)))
+                        ((and fw (eql p2 (1- page)) (null later))
+                         (setq later (list file line p2 y2)))))))))
+        later
+        structural)))
 
 (defun texsync--pdf-px (pwin page y)
   "Height Y of PAGE in PWIN, in pixels from the top of the window."
@@ -696,13 +811,16 @@ at `texsync-pdf-anchor' of the window, put at the same height."
     (when swin
       (let ((master (with-current-buffer (window-buffer swin) (texsync-master-file))))
         (if (texsync--beamer-p master)
-            (let* ((page (with-current-buffer (window-buffer pwin) (pdf-view-current-page pwin)))
-                   (line (texsync-frame-at-page master pdf page))
-                   (here (with-selected-window swin
-                           (and (equal (buffer-file-name) master) (texsync-frame-bounds)))))
-              ;; Leave point alone when it is already in that frame.
-              (when (and line (not (equal (car here) line)))
-                (texsync--show-source swin master line 0.1)))
+            (pcase-let* ((page (with-current-buffer (window-buffer pwin)
+                                 (pdf-view-current-page pwin)))
+                         (`(,file . ,line) (texsync-beamer-source master pdf page))
+                         (here (with-selected-window swin
+                                 (and (equal (buffer-file-name) file)
+                                      (or (car (texsync-frame-bounds))
+                                          (line-number-at-pos))))))
+              ;; Leave point alone when it is already in that frame (or on that line).
+              (when (and file (not (equal here line)))
+                (texsync--show-source swin file line 0.1)))
           (pcase-let* ((`(,page . ,y) (texsync--pdf-point-at pwin texsync-pdf-anchor))
                        (`(,file ,line ,p2 ,y2) (texsync--source-at pdf page y)))
             (unless (eq texsync-trace 'off)
@@ -740,6 +858,25 @@ at `texsync-pdf-anchor' of the window, put at the same height."
             (forward-char 1))))
       (nreverse frames))))
 
+(defun texsync--file-frames (file)
+  "Frames of FILE as line pairs (BEGIN . END), read when FILE changes on disk."
+  (texsync--cached 'frames file #'texsync--frames))
+
+(defun texsync-beamer-source (master pdf page)
+  "The source line of PAGE of a Beamer PDF, as (FILE . LINE), or nil.
+LINE begins the frame typeset on PAGE, or is the line outside frames
+that made the page (a \\section with an \\AtBeginSection slide).
+SyncTeX is asked once, at the page's centre; frames in \\input files are
+found too.  When that fails, the frame of MASTER on PAGE is searched
+for (`texsync-frame-at-page')."
+  (or (pcase-let ((`(,file ,line . ,_) (texsync--backward pdf page 0.5 0.5)))
+        (when file
+          (let ((fr (cl-find-if (lambda (f) (<= (car f) line (cdr f)))
+                                (texsync--file-frames file))))
+            (cons file (if fr (car fr) line)))))
+      (when-let* ((line (texsync-frame-at-page master pdf page)))
+        (cons master line))))
+
 (defun texsync-frame-at-page (master pdf page)
   "The first line of the frame of MASTER typeset on PAGE of PDF, or nil.
 Binary search over the frames: pages grow with the frames' order."
@@ -758,21 +895,23 @@ Binary search over the frames: pages grow with the frames' order."
               (t (setq found (car (aref frames mid)))))))
     found))
 
-(defun texsync--redirect-vrb (file _line _column)
-  "Send a ctrl+click on a verbatim Beamer frame to that frame's source.
-SyncTeX attributes such frames to Beamer's temporary .vrb file.
+(defun texsync--redirect-aux (file _line _column)
+  "Send a ctrl+click on text from a file LaTeX wrote to its source.
+SyncTeX attributes verbatim Beamer frames to the .vrb file, a
+bibliography to the .bbl file, and so on (`texsync--aux-source').
 Called by pdf-sync in the PDF window."
-  (when (and (string-suffix-p ".vrb" file) (derived-mode-p 'pdf-view-mode))
-    (let* ((pdf (buffer-file-name))
-           (dir (file-name-directory pdf))
-           (out (file-name-as-directory texsync-output-dir))
-           (srcdir (if (string-suffix-p out dir)
-                       (substring dir 0 (- (length dir) (length out)))
-                     dir))
-           (master (expand-file-name (concat (file-name-base pdf) ".tex") srcdir)))
-      (when-let* (((file-exists-p master))
-                  (line (texsync-frame-at-page master pdf (pdf-view-current-page))))
-        (list master line 0)))))
+  (when (and (derived-mode-p 'pdf-view-mode)
+             (not (string-suffix-p ".tex" file))
+             (buffer-file-name))
+    (let* ((ev last-input-event)
+           ;; the clicked page: in continuous mode it need not be the current one
+           (page (or (and (bound-and-true-p pdf-view-roll-minor-mode)
+                          (consp ev) (posnp (event-start ev))
+                          (integerp (posn-point (event-start ev)))
+                          (/ (+ (posn-point (event-start ev)) 3) 4))
+                     (pdf-view-current-page))))
+      (when-let* ((src (texsync--aux-source file (buffer-file-name) page)))
+        (list (car src) (cdr src) 0)))))
 
 (defun texsync--after-backward-jump ()
   "After ctrl+click in the PDF: keep the PDF still, and in Beamer go to the frame."
@@ -923,7 +1062,7 @@ back.  Saving, or pausing after an edit, compiles with latexmk."
 
 (add-hook 'post-command-hook #'texsync--post-command)
 (add-hook 'pdf-sync-backward-hook #'texsync--after-backward-jump)
-(add-hook 'pdf-sync-backward-redirect-functions #'texsync--redirect-vrb)
+(add-hook 'pdf-sync-backward-redirect-functions #'texsync--redirect-aux)
 
 (provide 'texsync)
 ;;; texsync.el ends here

@@ -136,24 +136,34 @@
     ;; page -> frame start, as used for ctrl+clicks on verbatim frames
     (should (equal (mapcar (lambda (p) (texsync-frame-at-page master pdf p)) '(1 2 3 4 5 6 7))
                    '(7 13 13 13 21 28 nil)))
+    ;; the same through one lookup per page, the verbatim frame (.vrb) included
+    (should (equal (mapcar (lambda (p) (cdr (texsync-beamer-source master pdf p))) '(1 2 3 4 5 6))
+                   '(7 13 13 13 21 28)))
     (pdf-info-close pdf)
     (delete-directory dir t)))
 
 (ert-deftest texsync-test-lecture-targets ()
-  "The lecture fixture: each frame's lines show its slide, also from the input file."
+  "The lecture fixture, both ways: frames, \\section slides, a frame in an \\input file.
+Pages: 1 Outline, 2 the \\AtBeginSection slide of Alpha, 3 First, 4 the
+slide of Beta, 5 Middle (part.tex), 6 Last (\\subsection Gamma has no slide)."
   (let* ((dir (texsync-test--copy-fixtures))
          (master (expand-file-name "lectures/lecture.tex" dir))
+         (part (expand-file-name "lectures/part.tex" dir))
          (pdf (texsync--pdf-file master)))
     (texsync-test--latexmk master)
     (texsync-test--in-file master
-      ;; title page from no frame: the first frame is slide 1 (no \\maketitle)
-      (dolist (case '((9 . 1) (16 . 3)))
+      ;; source -> PDF: (line . slide); nil on lines between frames that are not sectioning
+      (dolist (case '((16 . 1) (19 . 2) (20 . nil) (22 . 3) (25 . 4) (29 . 6) (32 . 6) (35 . nil)))
         (texsync-test--goto-line (car case))
         (should (equal (cons (car case) (texsync-beamer-target pdf master)) case))))
-    (texsync-test--in-file (expand-file-name "lectures/part.tex" dir)
+    (texsync-test--in-file part
       (texsync-test--goto-line 3)
       (should (equal (texsync-master-file) master))
-      (should (equal (texsync-beamer-target pdf master) 2)))
+      (should (equal (texsync-beamer-target pdf master) 5)))
+    ;; PDF -> source: the frame's first line, or the \\section line of its slide
+    (should (equal (mapcar (lambda (p) (texsync-beamer-source master pdf p)) '(1 2 3 4 5 6))
+                   (list (cons master 15) (cons master 19) (cons master 21)
+                         (cons master 25) (cons part 2) (cons master 31))))
     (pdf-info-close pdf)
     (delete-directory dir t)))
 
@@ -202,6 +212,31 @@ lines are counted, not failed; there can be at most one per page break."
       (let ((here (texsync-paper-target pdf)))
         (forward-line -1)
         (should (equal here (texsync-paper-target pdf)))))
+    (pdf-info-close pdf)
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-bibliography-and-memo ()
+  "PDF -> source on the references page: the \\bibliography line, at once.
+SyncTeX answers there with the .bbl file LaTeX wrote.  A second call
+asks SyncTeX nothing: answers are remembered until the PDF changes."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (pdf (texsync--pdf-file master))
+         (asked 0)
+         (count (lambda (&rest _) (setq asked (1+ asked)))))
+    (texsync-test--latexmk master)
+    (advice-add 'pdf-info-synctex-backward-search :before count)
+    (unwind-protect
+        (let* ((page (alist-get 'page (car (pdf-info-search-string "TeXbook" nil pdf))))
+               (hit (car (pdf-info-search-string "TeXbook" nil pdf)))
+               (y (nth 1 (car (alist-get 'edges hit))))
+               (r (texsync--source-at pdf page y)))
+          (should (equal (list (nth 0 r) (nth 1 r)) (list master 15)))
+          (should (<= asked 2))
+          (setq asked 0)
+          (should (equal (texsync--source-at pdf page y) r))
+          (should (= asked 0)))
+      (advice-remove 'pdf-info-synctex-backward-search count))
     (pdf-info-close pdf)
     (delete-directory dir t)))
 

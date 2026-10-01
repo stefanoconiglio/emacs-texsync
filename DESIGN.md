@@ -26,7 +26,9 @@ Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-
 - `test/texsync-test.el`: batch ERT tests (`make test`), pure functions and real SyncTeX output.
 - `test/gui-test.el`: scripted run in a graphical Emacs (`make gui-test`), through the command loop.
 - `test/fixtures/`: a Beamer deck (overlays, a verbatim frame, a commented-out frame), a
-  two-file article, and a lecture with its class in an `\input` header (`lectures/`).
+  two-file article with a BibTeX bibliography, and a lecture with its class in an `\input`
+  header, an outline, `\AtBeginSection` slides, a `\subsection` without a slide and a frame in an
+  `\input` file (`lectures/`).
 - `smoke-test/`: the scripts of the first feasibility test on real documents (RESEARCH_LOG.md,
   2026-10-01 08:07).
 
@@ -76,7 +78,17 @@ one slide early. Measured on a 73-slide deck: line-level forward search was righ
 
 So: `texsync-frame-bounds` finds the `\begin{frame}` … `\end{frame}` around point (matches
 inside `%` comments are skipped), and the forward search is made for the `\end{frame}` line.
-Outside a frame nothing moves.
+
+**Section lines.** Outside a frame, a line that starts `\part`, `\section`, `\subsection` or
+`\subsubsection` (starred too) shows the slide it makes: decks that put an outline or a title
+slide in `\AtBeginSection` get a page whose SyncTeX records carry the `\section` line itself (the
+macro is expanded while that line is read). `texsync-beamer-target` forward-searches the line
+and keeps the page only if a backward search at that page's centre returns the same line; if
+not (a `\subsection` without `\AtBeginSubsection` makes no slide, and forward search then
+returns the previous frame's page), it shows the first frame after the line, where the section
+starts. Other lines between frames (blank, comments) move nothing. Measured on a 57-slide lecture
+with `\AtBeginSection`: its four `\section` lines showed their slides (3, 11, 27, 38), its two
+`\subsection` lines the first slides of those subsections (43, 56).
 
 **Overlays.** All overlays of a frame are typeset from that same line, so SyncTeX cannot say
 which overlay a source line belongs to. The `.nav` file lists each frame's pages
@@ -94,13 +106,24 @@ press (and the second press of a double-click) to `ignore` and the release to
 
 pdf-sync's backward search finds the `\end{frame}` line and then its text
 heuristic usually moves point to the clicked words. If point is still on `\end{frame}`,
-`texsync--after-backward-jump` moves it to the frame's `\begin{frame}`. Verbatim (`[fragile]`)
-frames are typeset from Beamer's temporary `.vrb` file, and SyncTeX names that file;
-`texsync--redirect-vrb` (a `pdf-sync-backward-redirect-functions` entry) maps the clicked page
-to its frame with `texsync-frame-at-page`. That is a binary search over the source frames:
-frames are typeset in source order, so the page of frame *i* grows with *i*; frames made by
-macros (title or section pages) are not in the list but do not break the order. Each step is
-one forward search, so a 65-frame deck needs at most 7.
+`texsync--after-backward-jump` moves it to the frame's `\begin{frame}`.
+
+**Files LaTeX wrote.** SyncTeX sometimes names a file LaTeX wrote and read back instead of a
+source: Beamer's `.vrb` for verbatim (`[fragile]`) frames, `.toc` for an outline, `.bbl` for a
+bibliography (`.lof`, `.lot`, `.ind` likewise). `texsync--aux-source` sends such an answer to its
+source: in a Beamer document, to the frame typeset on that page (`texsync-frame-at-page`); in
+other documents, to the command that reads the file (`\bibliography` / `\printbibliography`,
+`\tableofcontents`, `\listoffigures`, `\listoftables`, `\printindex`), searched from
+`\begin{document}` on, because a preamble may name the command in a definition (an
+`\AtBeginSection` outline did). Ctrl+click goes through the same function
+(`texsync--redirect-aux`, a `pdf-sync-backward-redirect-functions` entry), with the clicked page
+taken from the click in continuous mode.
+
+`texsync-frame-at-page` is a binary search over the main file's frames: frames are typeset in
+source order, so the page of frame *i* grows with *i*; frames made by macros (title or section
+pages) are not in the list but do not break the order. Each step is one forward search, so a
+65-frame deck needs at most 7 (53 ms on a 57-slide deck, against 10 ms for one backward search).
+It is now only the fallback (next section).
 
 ### Other documents: line at the same height
 
@@ -156,9 +179,16 @@ One global `post-command-hook` function, `texsync--post-command`, decides after 
 
 `texsync-sync-source` finds the source window showing a texsync buffer of the same PDF.
 
-**Beamer.** The slide shown is mapped to its frame with `texsync-frame-at-page` (above) and the
-frame's first line is shown near the top of the source window, with point on it; if point is
-already in that frame, nothing moves.
+**Beamer.** `texsync-beamer-source` asks SyncTeX once, at the centre of the slide shown. A line
+inside a frame of that file (the main file or an `\input` one; frames are read once per change
+of the file on disk) gives the frame's first line; a line outside frames is the line that made
+the slide (a `\section` with an `\AtBeginSection` slide) and is used as it is; an answer in a
+file LaTeX wrote is sent to the frame on that page (above). Only when that gives nothing is the
+binary search used. Measured on a 57-slide lecture: every frame's slide round-trips to its frame,
+the four section slides give their `\section` lines, the outline (`.toc`) and the verbatim slide
+(`.vrb`) their frames; median 11 ms per slide (it was 53 ms with the binary search alone). The
+line is shown near the top of the source window, with point on it; if point is already in that
+frame, or on that line, nothing moves.
 
 **Other documents.** The anchor is the point at `texsync-pdf-anchor` (one third) of the PDF
 window's height, converted to (page, y) by walking the displayed pages (heights from
@@ -173,7 +203,19 @@ of the main file, from the page head):
 - it is accepted if a forward search of that line starts on the same page at or above the
   height tried;
 - only if no height gives such a line, a line whose text starts on the page before is taken —
-  a sentence or a whole paragraph on one source line that wraps across the page break.
+  a sentence or a whole paragraph on one source line that wraps across the page break — and
+  failing that the first structural line met (the title's `\maketitle`);
+- an answer in a file LaTeX wrote (the bibliography's `.bbl`) is accepted at once as the line of
+  the command that reads it, at the height tried;
+- each (file, line) answer is checked once per call (SyncTeX often gives the same answer at
+  several heights);
+- every SyncTeX answer, both directions, is remembered until the PDF changes on disk
+  (`texsync--memoized`, keyed on the PDF's modification time).
+
+Measured on a 17-page paper at 45 points, cache cleared each time: median 25 ms, 90th percentile
+50 ms (139 ms before), 1.5 backward searches per call (2.7), one point with no answer (six; five
+were on the bibliography pages, where every height gave a `.bbl` line and was rejected). A point
+already asked costs about 3 ms.
 
 The line is then shown in the source window at the height where its text *starts* in the PDF
 window (`texsync--pdf-px`), so both start at the same height, and point is put on it. A buffer of
@@ -225,14 +267,20 @@ fires on a modified buffer it saves the buffer, and saving compiles
 
 ## Tests
 
-- `make test`: 10 ERT tests. A lecture whose class is in an `\input` header and that names
-  itself with `% !TEX root` (and an `\input` part whose `% !TEX root=` points back): main file,
-  class, Beamer, and each frame's slide, the part's included. Frame bounds for every line of the fixture deck (including a
-  commented-out frame); structural lines; candidate order; overlay choice; main-file guess
-  (unique, ambiguous, explicit `TeX-master`); compiled fixtures: every line of every frame →
-  its slide, for `last` and `first` overlays, page → frame for verbatim redirects; every
-  sentence line of the article → the page and height (±0.02) of a text search for that
-  sentence, in reading order, with page-break artifacts counted (≤ one per page break).
+- `make test`: 11 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
+  - Pure functions: frame bounds for every line of the fixture deck (a commented-out frame
+    included); structural lines; candidate order; overlay choice; main-file guess (unique,
+    ambiguous, explicit `TeX-master`); a lecture whose class is in an `\input` header and that
+    names itself with `% !TEX root` (its `\input` part's `% !TEX root=` points back).
+  - Deck fixture: every line of every frame → its slide, `last` and `first` overlays; page →
+    frame by binary search and by one lookup per page, the verbatim frame included.
+  - Lecture fixture, both ways: frame lines, `\section` lines (→ their `\AtBeginSection`
+    slides), a `\subsection` without a slide (→ the next frame's), lines between frames (→
+    nothing), a frame in `part.tex`; each page → its frame's first line or its `\section` line.
+  - Article fixture: every sentence line → the page and height (±0.02) of a text search for
+    that sentence, in reading order, with page-break artifacts counted (≤ one per page break);
+    on the references page PDF → source gives the `\bibliography` line with at most two
+    backward searches, and a repeated call asks SyncTeX nothing.
 - `make gui-test`: 32 checks in a graphical `emacs -Q`, fullscreen, keys and mouse events sent
   through `execute-kbd-macro` so that the command loop, `post-command-hook` and timers run as
   for a user. **It takes over the screen for about a minute: run it when the machine is free.**

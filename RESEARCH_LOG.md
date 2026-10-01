@@ -260,3 +260,53 @@ TeX-master". The deck's first line is `% !TEX root = <itself>.tex`, its second
 **Results.** `make test` 10 / 10 (2 new, with a fixture in that shape). On the real deck,
 read-only with its existing build: main file found, class beamer; the frames titled in the
 source map to slides 4, 5, 6, and pdftotext shows those titles on exactly those slides.
+
+## 2026-10-01 21:16 CEST — Section slides, and the PDF leading more slowly than the source
+
+**Reports (user).** (1) Two-way scrolling works, but following the PDF feels slower than
+following the source. (2) In a Beamer lecture with `\AtBeginSection` slides, a section slide never
+brings the source to its `\section` line.
+
+**Measured (scratch copies of a 57-slide lecture and a 17-page paper, batch Emacs).**
+- Source leads: one forward search, about 13 ms on the paper.
+- PDF leads, deck: `texsync-frame-at-page` (binary search, ~7 forward searches) 53 ms per slide,
+  against 10 ms for one backward search. A backward search at the centre of each of the 57 pages
+  returned the frame's `\end{frame}` line for every frame slide, exactly the `\section` line
+  for the 4 section slides (the `\AtBeginSection` macro is expanded while that line is read), the
+  `.toc` file for the outline slide and the `.vrb` file for the one verbatim slide. The binary
+  search over source frames cannot find a section slide: it belongs to no frame.
+- PDF leads, paper: `texsync--source-at` over 45 points: median 27 ms, 90th percentile 139 ms,
+  max 212 ms, 2.7 backward searches per call, 6 points with no answer. The slow and failed ones:
+  the bibliography pages (every height answered with a `.bbl` line, rejected: 11 tries) and
+  points where the same rejected line came back at every height.
+
+**Mistake.** My first paper timing showed no answer at all 40 points: the scratch copy had been
+deleted when the session restarted, so every lookup failed on a missing PDF. Recreated it before
+measuring again.
+
+**What was done.** `texsync-beamer-source` (one backward search at the slide's centre; frame of
+the answering file, or the line itself outside frames; binary search as fallback); section lines
+lead too (`texsync-beamer-target`: the line's own slide if SyncTeX confirms it, else the next
+frame's); `texsync--aux-source` maps answers in files LaTeX wrote (Beamer: the frame on the page;
+others: `\bibliography`, `\tableofcontents`, … searched from `\begin{document}`); ctrl+click uses
+it (`texsync--redirect-aux`, clicked page from the event); `texsync--source-at` checks each
+answer once, accepts helper-file answers at once and falls back to a structural line; every
+SyncTeX answer is memoized until the PDF changes.
+
+**Results.** Deck: all 57 slides correct (frames round-trip, section slides → `\section` lines,
+outline and verbatim slides → their frames); median 11 ms, max 47 ms per slide, no cache. Source
+→ PDF: the 4 `\section` lines → slides 3, 11, 27, 38; the 2 `\subsection` lines (no slide of
+their own) → 43, 56, their first slides; blank lines between frames → nothing. Paper: median
+25 ms, 90th percentile 50 ms, 1.5 backward searches per call, 1 point without an answer (before
+the structural fallback; the title block, `\maketitle`); bibliography pages → `\bibliography{BIB}`;
+a repeated point about 3 ms. `make test` 11 / 11 (2 new tests, fixtures extended).
+
+**Mistake on the way.** The first `.toc` mapping searched the whole file for `\tableofcontents`
+and found the one inside the preamble's `\AtBeginSection` definition: the outline slide went to
+that macro's frame. In Beamer, helper-file answers now go through the page; elsewhere the search
+starts at `\begin{document}`.
+
+**Not checked.** `make gui-test` (it takes over the screen; not run without asking). Whether the
+PDF-led sync now *feels* as fast as the source-led one is the user's call: both still wait
+0.15 s after the last motion (`texsync-sync-delay`), and pdf-tools' own scrolling and rendering
+of pages is unchanged.

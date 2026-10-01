@@ -3,13 +3,30 @@
 
 \title{A lecture}
 
+\AtBeginSection[]
+{
+  \begin{frame}
+    \tableofcontents[currentsection]
+  \end{frame}
+}
+
 \begin{document}
+
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+\section{Alpha}
 
 \begin{frame}{First}
   The first slide.
 \end{frame}
 
+\section{Beta}
+
 \input{part}
+
+\subsection{Gamma}
 
 \begin{frame}{Last}
   The last slide.
