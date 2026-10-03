@@ -383,3 +383,16 @@ mistakes data for commands (quoted strings, here-document bodies; the script of 
 still checked). Its 18 test cases pass; the old hook got 6 wrong, one a real miss
 (`bash -c "<engine> … 2>&1"` under `systemd-run`).
 
+
+## 2026-10-03 21:54 CEST — Builds from VS Code
+
+**Question (user).** Would a compile issued from VS Code break texsync?
+
+**Found (read-only).** The user's LaTeX Workshop 10.19 builds with latexmk `-synctex=1 -pdf` into
+`%DIR%/build`: the same files texsync uses, so no. Two snags only with one document open in both
+editors: LaTeX Workshop's default `autoBuild.run` = `onFileChange` (not overridden) starts a build
+when texsync saves on a pause, so two latexmk runs can write `build/` at once; and the Emacs PDF
+buffer is reverted only after texsync's own compiles, not after VS Code's.
+
+**Decision (user).** No change for now. Possible fixes if needed: `autoBuild.run` = `onSave` in VS
+Code; texsync reverting the PDF when it changes on disk.
