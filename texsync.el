@@ -346,9 +346,16 @@ Search backwards when BACKWARD is non-nil.  Point ends at the match start."
 (defvar texsync--memo (make-hash-table :test 'equal)
   "PDF -> (MTIME . TABLE): SyncTeX answers for the PDF as last compiled.")
 
+(defun texsync--synctex-file (pdf)
+  "PDF's SyncTeX file, or nil when there is none."
+  (let ((base (file-name-sans-extension pdf)))
+    (cl-find-if #'file-exists-p (list (concat base ".synctex.gz") (concat base ".synctex")))))
+
 (defun texsync--memoized (pdf key fn)
-  "FN's value for KEY, remembered until PDF changes on disk."
-  (let* ((mtime (file-attribute-modification-time (file-attributes pdf)))
+  "FN's value for KEY, remembered until PDF or its SyncTeX file changes on disk."
+  (let* ((mtime (list (file-attribute-modification-time (file-attributes pdf))
+                      (let ((st (texsync--synctex-file pdf)))
+                        (and st (file-attribute-modification-time (file-attributes st))))))
          (entry (gethash pdf texsync--memo)))
     (unless (and entry (equal (car entry) mtime))
       (setq entry (cons mtime (make-hash-table :test 'equal)))
@@ -633,16 +640,20 @@ With DISPLAY (interactively), open and show the PDF if it is not shown."
                   (pwin (texsync--pdf-window pbuf display)))
         (let ((beamer (texsync--beamer-p master)))
           (texsync--setup-pdf pwin beamer)
-          (if beamer
+          (cond
+           ;; without SyncTeX data there is nothing to look up (rebuilt once)
+           ((not (texsync--ensure-synctex master pdf)))
+           (beamer
               (when-let* ((page (texsync-beamer-target pdf master)))
                 (texsync--place pwin page
-                                (lambda () (texsync--show-page pwin page))))
+                                (lambda () (texsync--show-page pwin page)))))
+           (t
             (when-let* ((target (texsync-paper-target pdf))
                         (frac (texsync--point-fraction)))
               (texsync--place pwin (list (car target) (cdr target) frac)
                               (lambda ()
                                 (texsync--show-position
-                                 pwin (car target) (cdr target) frac)))))))))))
+                                 pwin (car target) (cdr target) frac))))))))))))
 
 (defun texsync-view ()
   "Show the PDF at the place of point.  Used as AUCTeX's viewer."
@@ -817,7 +828,9 @@ at `texsync-pdf-anchor' of the window, put at the same height."
          (swin (and pdf (texsync--source-window pdf))))
     (when swin
       (let ((master (with-current-buffer (window-buffer swin) (texsync-master-file))))
-        (if (texsync--beamer-p master)
+        (cond
+         ((not (texsync--ensure-synctex master pdf)))
+         ((texsync--beamer-p master)
             (pcase-let* ((page (with-current-buffer (window-buffer pwin)
                                  (pdf-view-current-page pwin)))
                          (`(,file . ,line) (texsync-beamer-source master pdf page))
@@ -827,7 +840,8 @@ at `texsync-pdf-anchor' of the window, put at the same height."
                                           (line-number-at-pos))))))
               ;; Leave point alone when it is already in that frame (or on that line).
               (when (and file (not (equal here line)))
-                (texsync--show-source swin file line 0.1)))
+                (texsync--show-source swin file line 0.1))))
+         (t
           (pcase-let* ((`(,page . ,y) (texsync--pdf-point-at pwin texsync-pdf-anchor))
                        (`(,file ,line ,p2 ,y2) (texsync--source-at pdf page y)))
             (unless (eq texsync-trace 'off)
@@ -840,7 +854,7 @@ at `texsync-pdf-anchor' of the window, put at the same height."
               ;; the anchor, so that both sit at the same height.
               (let ((frac (/ (texsync--pdf-px pwin p2 y2)
                              (float (window-body-height pwin t)))))
-                (texsync--show-source swin file line (min 0.95 (max 0.0 frac)))))))))))
+                (texsync--show-source swin file line (min 0.95 (max 0.0 frac))))))))))))
 
 (defun texsync--sync-from-pdf (pwin)
   "Make the source follow PWIN, then remember PWIN's state as synced."
@@ -938,10 +952,29 @@ Called by pdf-sync in the PDF window."
 
 ;;;; Compiling
 
-(defun texsync-compile (&optional master)
+(defvar texsync--synctex-asked (make-hash-table :test 'equal)
+  "PDF -> its modification time when a rebuild for missing SyncTeX data was asked.")
+
+(defun texsync--ensure-synctex (master pdf)
+  "Non-nil when PDF has SyncTeX data; otherwise rebuild MASTER, once per PDF.
+A PDF built by something else (a plain pdflatex run, a Makefile) has no
+.synctex.gz, and every lookup would fail quietly.  The rebuild is forced:
+latexmk may hold the PDF up to date."
+  (or (texsync--synctex-file pdf)
+      (let ((mtime (file-attribute-modification-time (file-attributes pdf))))
+        (unless (equal (gethash pdf texsync--synctex-asked) mtime)
+          (puthash pdf mtime texsync--synctex-asked)
+          (message "texsync: %s has no SyncTeX data (built without -synctex=1?); rebuilding it"
+                   (file-name-nondirectory pdf))
+          (texsync-compile master t))
+        nil)))
+
+(defun texsync-compile (&optional master force)
   "Compile MASTER (default: this buffer's main file) with latexmk, asynchronously.
-A request while a compile runs queues one more run after it."
-  (interactive)
+A request while a compile runs queues one more run after it.  With FORCE
+\(interactively, a prefix argument), latexmk rebuilds even when it holds
+the PDF up to date (-g)."
+  (interactive (list nil current-prefix-arg))
   (let ((master (or master (texsync-master-file))))
     (unless master
       (user-error "texsync: cannot tell the main file; set `TeX-master'"))
@@ -959,6 +992,7 @@ A request while a compile runs queues one more run after it."
                   :buffer buf
                   :noquery t
                   :command (append texsync-latexmk-command
+                                   (and force '("-g"))
                                    (list (concat "-outdir=" texsync-output-dir)
                                          (file-name-nondirectory master)))
                   :sentinel (lambda (proc _event) (texsync--compiled master proc)))

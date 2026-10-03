@@ -79,7 +79,12 @@ Two ways to stop it:
 - `texsync-structural-line-regexp`, `texsync-search-radius`: lines skipped when looking for a
   position.
 
-Commands: `texsync-view`, `texsync-sync`, `texsync-compile`, `texsync-toggle-follow`.
+Commands: `texsync-view`, `texsync-sync`, `texsync-compile` (with `C-u`, a forced rebuild),
+`texsync-toggle-follow`.
+
+A PDF built by something else without `-synctex=1` (a plain `pdflatex` run, a Makefile) cannot
+be synced: texsync says so in the echo area and rebuilds it once with latexmk. If you also build
+your documents some other way, pass `-synctex=1` there too.
 
 ## Tests
 
