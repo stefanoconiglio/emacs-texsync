@@ -1,7 +1,7 @@
 ;;; texsync.el --- Keep a pdf-tools view in step with the LaTeX source  -*- lexical-binding: t -*-
 
 ;; Author: Stefano Coniglio
-;; URL: https://github.com/stefanoconiglio/texsync
+;; URL: https://github.com/stefanoconiglio/emacs-texsync
 ;; Version: 0.1
 ;; Package-Requires: ((emacs "29.1") (pdf-tools "1.1"))
 ;; Keywords: tex
