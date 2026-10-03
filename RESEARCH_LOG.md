@@ -370,3 +370,16 @@ follows). README, `texsync.el`'s URL header and `try.el` name the new repository
 package, its modes and its file keep the name `texsync`. The user's init file (in
 `omarchy-customizations`) loads it from `~/repos/emacs-texsync`. Moving the folder itself, and
 this session's history with it, is a command the user runs after closing the session.
+
+## 2026-10-03 21:43 CEST — Builds made by agents now carry SyncTeX data
+
+**Decision (user).** The one-off compile command in the user's global agent instructions gets
+`-synctex=1` (pdflatex and latexmk forms), with a line saying why: texsync, and ctrl+click in
+viewers, need `build/file.synctex.gz`. This closes the open question of the 12:09 entry; texsync
+keeps rebuilding a PDF that lacks the file, for builds made some other way.
+
+**Also.** The user's guard hook against LaTeX runs without an output directory no longer
+mistakes data for commands (quoted strings, here-document bodies; the script of `bash -c` is
+still checked). Its 18 test cases pass; the old hook got 6 wrong, one a real miss
+(`bash -c "<engine> … 2>&1"` under `systemd-run`).
+
