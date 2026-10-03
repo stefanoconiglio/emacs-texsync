@@ -358,3 +358,15 @@ version, forced, with a message), `texsync-compile` FORCE (`-g`), memo keyed on 
 file too. `make test` 13 / 13. LOG.md started (change log, as the user's CLAUDE.md asks).
 
 **Open.** Whether the user's CLAUDE.md compile command should carry `-synctex=1` (asked).
+
+## 2026-10-03 21:33 CEST — Renamed emacs-texsync
+
+**Decision (user).** The repository is called `emacs-texsync`, public on the user's GitHub; the
+local folder follows (`~/repos/emacs-texsync`). The Omarchy theme follower stays in the private
+`omarchy-customizations`.
+
+**Done.** `gh repo rename emacs-texsync` (GitHub redirects the old URL; the local `origin`
+follows). README, `texsync.el`'s URL header and `try.el` name the new repository and folder; the
+package, its modes and its file keep the name `texsync`. The user's init file (in
+`omarchy-customizations`) loads it from `~/repos/emacs-texsync`. Moving the folder itself, and
+this session's history with it, is a command the user runs after closing the session.

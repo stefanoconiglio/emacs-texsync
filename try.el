@@ -1,6 +1,6 @@
 ;;; try.el --- Try texsync without touching your init file  -*- lexical-binding: t -*-
 
-;; /usr/bin/emacs -Q -l ~/repos/texsync/try.el FILE.tex
+;; /usr/bin/emacs -Q -l ~/repos/emacs-texsync/try.el FILE.tex
 ;;
 ;; Opens FILE.tex with texsync-mode on.
 ;; C-c C-v shows the PDF on the right (compiling first if build/ has none).

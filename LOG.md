@@ -22,3 +22,6 @@ RESEARCH_LOG.md; how the code works, in DESIGN.md.
 - Test `texsync-test-missing-synctex` (13 tests). DESIGN.md and README.md updated.
 - Reported by the user as "texsync mode is off": it was on; the deck's PDF had been built at
   00:10 by a plain pdflatex run without SyncTeX. Rebuilt it through texsync in the user's Emacs.
+- Repository renamed `texsync` → `emacs-texsync` on GitHub (the old URL redirects); local folder
+  to become `~/repos/emacs-texsync`. README (title, clone line, paths), the URL header of
+  `texsync.el` and `try.el`'s usage line updated. The package keeps its name, `texsync`.

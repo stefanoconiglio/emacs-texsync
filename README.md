@@ -1,6 +1,8 @@
-# texsync
+# emacs-texsync
 
 Emacs minor mode: LaTeX source on the left, its PDF (pdf-tools) on the right, kept in step.
+The package and its modes are called `texsync` (`texsync.el`, `texsync-mode`); the repository
+was called `texsync` until 2026-10-03.
 
 - Move or scroll in the source → the PDF follows: Beamer shows the frame's slide, other
   documents scroll so the line at point is at the same height in both windows.
@@ -20,7 +22,7 @@ Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live. How it work
 ## Install
 
 ```
-git clone https://github.com/stefanoconiglio/texsync ~/repos/texsync
+git clone https://github.com/stefanoconiglio/emacs-texsync ~/repos/emacs-texsync
 ```
 
 then the Setup below, with that path.
@@ -28,7 +30,7 @@ then the Setup below, with that path.
 ## Try it
 
 ```
-/usr/bin/emacs -Q -l ~/repos/texsync/try.el FILE.tex
+/usr/bin/emacs -Q -l ~/repos/emacs-texsync/try.el FILE.tex
 ```
 
 Then `C-c C-v`. Your own init file is not loaded.
@@ -36,7 +38,7 @@ Then `C-c C-v`. Your own init file is not loaded.
 ## Setup
 
 ```elisp
-(add-to-list 'load-path "~/repos/texsync")  ; your clone
+(add-to-list 'load-path "~/repos/emacs-texsync")  ; your clone
 (require 'texsync)
 (pdf-tools-install :no-query)
 ;; texsync in graphical frames; terminal Emacs keeps its usual viewer
