@@ -335,3 +335,26 @@ document, from a source or the PDF, and keeps compiling, View and ctrl+click; th
 **Note for next time.** After changing texsync, the running daemon must reload it
 (`emacsclient --eval '(load "~/repos/texsync/texsync.el" nil t)'`) or be restarted; a new
 GUI Emacs is not enough when the user works in daemon frames.
+
+## 2026-10-03 12:09 CEST — "texsync mode is off now?": a PDF without SyncTeX data
+
+**Report (user).** texsync looked switched off on a lecture deck.
+
+**Found (read-only, in the user's Emacs daemon).** `texsync-mode` on, following on, the right
+PDF shown with `texsync-pdf-mode`, mode line "Sync". But every SyncTeX lookup failed: epdfinfo
+"Unable to create synctex scanner". The deck's `build/` had the PDF from 00:10 and no
+`.synctex.gz`, nor latexmk's `.fls` / `.fdb_latexmk`: built by a plain pdflatex run without
+`-synctex=1` (no Makefile in that folder). A likely source: the one-off compile command in the
+user's CLAUDE.md has no `-synctex=1`, so PDFs built by agents following it cannot be synced. The
+memo also kept the failed (nil) answers for that PDF version.
+
+**Mistake.** My first check read the missing `.synctex.gz`'s modification time as 12:05
+(`file-attributes` of a missing file is nil, which `format-time-string` prints as "now"), and
+I briefly took it for a broken rebuild.
+
+**Done.** Rebuilt the deck with `texsync-compile` in the daemon (6 s): `.synctex.gz` written
+(115 KB), point's line 26 → slide 4. Code: `texsync--ensure-synctex` (rebuild once per PDF
+version, forced, with a message), `texsync-compile` FORCE (`-g`), memo keyed on the SyncTeX
+file too. `make test` 13 / 13. LOG.md started (change log, as the user's CLAUDE.md asks).
+
+**Open.** Whether the user's CLAUDE.md compile command should carry `-synctex=1` (asked).

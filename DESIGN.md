@@ -216,7 +216,7 @@ of the main file, from the page head):
 - each (file, line) answer is checked once per call (SyncTeX often gives the same answer at
   several heights);
 - every SyncTeX answer, both directions, is remembered until the PDF changes on disk
-  (`texsync--memoized`, keyed on the PDF's modification time).
+  (`texsync--memoized`, keyed on the modification times of the PDF and of its SyncTeX file).
 
 Measured on a 17-page paper at 45 points, cache cleared each time: median 25 ms, 90th percentile
 50 ms (139 ms before), 1.5 backward searches per call (2.7), one point with no answer (six; five
@@ -236,6 +236,17 @@ the page width: on a two-column page the source follows the left column (known l
 On exit 0 the PDF buffer is reverted (epdfinfo reopens the document and its SyncTeX data) and,
 after a 0.1 s timer that lets redisplay rebuild pdf-roll's page overlays, the selected source
 window is synced again. On failure the old view stays and a message names the log buffer.
+With a prefix argument (`force`) latexmk gets `-g` and rebuilds even when it holds the PDF up to
+date.
+
+**PDFs without SyncTeX data.** A PDF built by something else — a plain `pdflatex` run, a
+Makefile, an agent following a one-off compile command — has no `.synctex.gz`, and then every
+lookup fails quietly: texsync looked switched off. Before any lookup, in both directions,
+`texsync--ensure-synctex` checks for `<main>.synctex.gz` (or `.synctex`) beside the PDF. When it
+is missing it says so in the echo area and rebuilds once per PDF version (`texsync--synctex-asked`
+holds the PDF's modification time), forced, since latexmk's own records may call the PDF up to
+date. The PDF is still shown meanwhile. Seen on a lecture deck whose 00:10 build had no SyncTeX
+file and none of latexmk's (`.fls`, `.fdb_latexmk`).
 
 **AUCTeX's own runs.** `C-c C-c` saves the buffer and then starts AUCTeX's command; the save
 would also start texsync's latexmk, and two TeX runs would write the same `build/` files. So
@@ -273,7 +284,7 @@ fires on a modified buffer it saves the buffer, and saving compiles
 
 ## Tests
 
-- `make test`: 12 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
+- `make test`: 13 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
   - Pure functions: frame bounds for every line of the fixture deck (a commented-out frame
     included); structural lines; candidate order; overlay choice; main-file guess (unique,
     ambiguous, explicit `TeX-master`); a lecture whose class is in an `\input` header and that
@@ -289,6 +300,9 @@ fires on a modified buffer it saves the buffer, and saving compiles
     backward searches, and a repeated call asks SyncTeX nothing.
   - Pausing: `texsync-toggle-follow` from one file of the article pauses both files (lighter
     `Sync:off`), a command then schedules no sync, toggling again resumes, `-1` pauses.
+  - Missing SyncTeX data: with the article's `.synctex.gz` deleted a lookup gives nil, one forced
+    rebuild (`-g`) starts and a second request does not queue another; afterwards the file is
+    back and the same lookup answers (the nil was not kept).
 - `make gui-test`: 32 checks in a graphical `emacs -Q`, fullscreen, keys and mouse events sent
   through `execute-kbd-macro` so that the command loop, `post-command-hook` and timers run as
   for a user. **It takes over the screen for about a minute: run it when the machine is free.**

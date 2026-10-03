@@ -273,5 +273,30 @@ asks SyncTeX nothing: answers are remembered until the PDF changes."
       (dolist (b bufs) (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b))
       (delete-directory dir t))))
 
+(ert-deftest texsync-test-missing-synctex ()
+  "A PDF built without -synctex=1 is rebuilt once, forced, and lookups then work.
+SyncTeX answers looked up while the data was missing are not kept."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (sec (expand-file-name "paper/sec.tex" dir))
+         (pdf (texsync--pdf-file master)))
+    (texsync-test--latexmk master)
+    (delete-file (texsync--synctex-file pdf))
+    (should-not (texsync--synctex-file pdf))
+    (should-not (texsync--forward sec 5 pdf))   ; nothing to look up, remembered as nil
+    (should-not (texsync--ensure-synctex master pdf))
+    (let ((proc (gethash master texsync--processes)))
+      (should (process-live-p proc))
+      (should (member "-g" (process-command proc)))
+      ;; asked once per PDF: no second rebuild while this one runs
+      (should-not (texsync--ensure-synctex master pdf))
+      (should-not (gethash master texsync--pending))
+      (while (process-live-p proc) (accept-process-output proc 0.1)))
+    (should (texsync--synctex-file pdf))
+    (should (texsync--ensure-synctex master pdf))
+    (should (texsync--forward sec 5 pdf))       ; the nil above was not kept
+    (pdf-info-close pdf)
+    (delete-directory dir t)))
+
 (provide 'texsync-test)
 ;;; texsync-test.el ends here
