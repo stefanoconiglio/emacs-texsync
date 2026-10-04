@@ -1110,6 +1110,20 @@ back on brings the PDF to the place of point."
              (if on "" " (M-x texsync-toggle-follow to switch it back on)"))
     on))
 
+(defun texsync--find-master ()
+  "Find the main file of this buffer anew.
+A guess (`texsync-guess-master') is kept in a buffer-local `TeX-master', so
+AUCTeX's own commands agree.  Run when the mode is turned on and again by
+`hack-local-variables-hook', after the local variables are applied."
+  (setq texsync--master nil
+        texsync--last nil)
+  (when-let* ((m (texsync-master-file)))
+    (unless (or (and (boundp 'TeX-master) (stringp TeX-master))
+                (file-equal-p m (buffer-file-name)))
+      (setq-local TeX-master
+                  (file-name-sans-extension
+                   (file-relative-name m (file-name-directory (buffer-file-name))))))))
+
 ;;;###autoload
 (define-minor-mode texsync-mode
   "Keep the PDF of this LaTeX file in step with point.
@@ -1125,14 +1139,11 @@ stops everything, compiling included, in this buffer."
   :keymap (make-sparse-keymap)
   (if texsync-mode
       (progn
-        (setq texsync--master nil
-              texsync--last nil)
-        (when-let* ((m (texsync-master-file)))
-          (unless (or (and (boundp 'TeX-master) (stringp TeX-master))
-                      (file-equal-p m (buffer-file-name)))
-            (setq-local TeX-master
-                        (file-name-sans-extension
-                         (file-relative-name m (file-name-directory (buffer-file-name)))))))
+        (texsync--find-master)
+        ;; Turned on from a mode hook, the mode runs before Emacs applies the
+        ;; file's local variables and .dir-locals.el; a `TeX-master' set there
+        ;; must replace the main file found now.
+        (add-hook 'hack-local-variables-hook #'texsync--find-master nil t)
         (setq-local TeX-output-dir texsync-output-dir)
         (setq-local TeX-view-program-list
                     (cons '("texsync" texsync-view)
@@ -1142,6 +1153,7 @@ stops everything, compiling included, in this buffer."
         (add-hook 'after-save-hook #'texsync--after-save nil t))
     (remove-hook 'after-change-functions #'texsync--after-change t)
     (remove-hook 'after-save-hook #'texsync--after-save t)
+    (remove-hook 'hack-local-variables-hook #'texsync--find-master t)
     (dolist (v '(TeX-output-dir TeX-view-program-list TeX-view-program-selection))
       (kill-local-variable v))))
 

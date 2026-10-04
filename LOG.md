@@ -25,3 +25,13 @@ RESEARCH_LOG.md; how the code works, in DESIGN.md.
 - Repository renamed `texsync` → `emacs-texsync` on GitHub (the old URL redirects); local folder
   to become `~/repos/emacs-texsync`. README (title, clone line, paths), the URL header of
   `texsync.el` and `try.el`'s usage line updated. The package keeps its name, `texsync`.
+
+## 2026-10-04
+
+- `TeX-master` from a file's local variables or from `.dir-locals.el` is honoured: the main file
+  is found again from a buffer-local `hack-local-variables-hook` (`texsync--find-master`, split
+  out of `texsync-mode`). Before, the mode, turned on from `LaTeX-mode-hook`, cached the main
+  file before Emacs applied those variables, and they were ignored.
+- Test `texsync-test-local-master` (14 tests). DESIGN.md (main file, tests) and README.md
+  (`TeX-master` from `.dir-locals.el`, with an example) updated.
+

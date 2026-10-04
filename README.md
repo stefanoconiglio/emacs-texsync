@@ -49,6 +49,14 @@ Then `C-c C-v`. Your own init file is not loaded.
 For a file `\input` by a main file in another directory, set `TeX-master` (texsync guesses it
 only when exactly one file in the same directory inputs it).
 
+`TeX-master` can also come from the file's local variables or from a `.dir-locals.el`. One
+`.dir-locals.el` line, for example, makes every deck of a folder follow a combined PDF built from
+a file that `\input`s them all, even though each deck is a document of its own:
+
+```elisp
+((nil . ((TeX-master . "all-decks.tex"))))
+```
+
 ## What it is, and switching it off
 
 Two minor modes; the major modes stay AUCTeX's LaTeX mode and pdf-tools' PDF view.

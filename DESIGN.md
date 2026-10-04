@@ -60,6 +60,13 @@ the same directory that is a main file in that sense and `\input`s / `\include`s
 no guess and the user sets `TeX-master`. A guess is stored in a buffer-local `TeX-master`, so
 AUCTeX's own commands agree.
 
+The main file is found when `texsync-mode` is turned on and again from a buffer-local
+`hack-local-variables-hook` (`texsync--find-master`). The setup turns the mode on from
+`LaTeX-mode-hook`, and `run-mode-hooks` runs the mode hooks *before* it applies the file's local
+variables and `.dir-locals.el`; a `TeX-master` set there (a `Local Variables` block, or a
+`.dir-locals.el` that makes every deck of a folder part of one combined document) would
+otherwise be ignored, the main file having been found and cached a moment earlier.
+
 The document class (to tell Beamer) is read from the main file, or else from the files its
 preamble `\input`s before `\begin{document}` (one level); if neither names it, a `.nav` file in
 `build/` (Beamer writes one) marks a Beamer document.
@@ -284,10 +291,12 @@ fires on a modified buffer it saves the buffer, and saving compiles
 
 ## Tests
 
-- `make test`: 13 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
+- `make test`: 14 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
   - Pure functions: frame bounds for every line of the fixture deck (a commented-out frame
     included); structural lines; candidate order; overlay choice; main-file guess (unique,
-    ambiguous, explicit `TeX-master`); a lecture whose class is in an `\input` header and that
+    ambiguous, explicit `TeX-master`); a `TeX-master` from `.dir-locals.el` and from a file's
+    `Local Variables`, with texsync turned on from `LaTeX-mode-hook`, wins over the deck being a
+    main file itself (and without them the deck is its own); a lecture whose class is in an `\input` header and that
     names itself with `% !TEX root` (its `\input` part's `% !TEX root=` points back).
   - Deck fixture: every line of every frame → its slide, `last` and `first` overlays; page →
     frame by binary search and by one lookup per page, the verbatim frame included.

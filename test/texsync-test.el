@@ -100,6 +100,38 @@
       (should (equal (texsync-master-file) (expand-file-name "deck.tex" dir))))
     (delete-directory dir t)))
 
+(ert-deftest texsync-test-local-master ()
+  "A `TeX-master' from .dir-locals.el or the file's local variables wins.
+texsync is turned on from `LaTeX-mode-hook', as in the setup, which runs
+before Emacs applies those variables; each deck is a main file of its own."
+  (let* ((dir (file-name-as-directory (make-temp-file "texsync-local-master-" t)))
+         (sub (file-name-as-directory (expand-file-name "sub" dir)))
+         (deck "\\documentclass{beamer}\n\\begin{document}\n\\begin{frame}x\\end{frame}\n\\end{document}\n")
+         (LaTeX-mode-hook (list #'texsync-mode))
+         (enable-local-variables :safe))
+    (make-directory sub)
+    (with-temp-file (expand-file-name "all.tex" dir)
+      (insert "\\documentclass{beamer}\n\\usepackage{docmute}\n\\begin{document}\n"
+              "\\input{a}\n\\input{sub/b}\n\\end{document}\n"))
+    (with-temp-file (expand-file-name "a.tex" dir) (insert deck))
+    (with-temp-file (expand-file-name ".dir-locals.el" dir)
+      (prin1 '((nil . ((TeX-master . "all.tex")))) (current-buffer)))
+    (with-temp-file (expand-file-name "b.tex" sub)
+      (insert deck "% Local Variables:\n% TeX-master: \"../all\"\n% End:\n"))
+    (texsync-test--in-file (expand-file-name "a.tex" dir)
+      (should texsync-mode)
+      (should (equal (texsync-master-file) (expand-file-name "all.tex" dir))))
+    (texsync-test--in-file (expand-file-name "b.tex" sub)
+      (should (equal (texsync-master-file) (expand-file-name "all.tex" dir))))
+    (texsync-test--in-file (expand-file-name "all.tex" dir)
+      (should (equal (texsync-master-file) (expand-file-name "all.tex" dir))))
+    ;; without local variables, a deck is still its own main file
+    (delete-file (expand-file-name ".dir-locals.el" dir))
+    (setq dir-locals-directory-cache nil)
+    (texsync-test--in-file (expand-file-name "a.tex" dir)
+      (should (equal (texsync-master-file) (expand-file-name "a.tex" dir))))
+    (delete-directory dir t)))
+
 (ert-deftest texsync-test-lecture-with-header ()
   "A lecture whose class is in an \\input header and that names itself with % !TEX root."
   (let* ((dir (texsync-test--copy-fixtures))

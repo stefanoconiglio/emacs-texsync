@@ -396,3 +396,32 @@ buffer is reverted only after texsync's own compiles, not after VS Code's.
 
 **Decision (user).** No change for now. Possible fixes if needed: `autoBuild.run` = `onSave` in VS
 Code; texsync reverting the PDF when it changes on disk.
+
+## 2026-10-04 17:17 CEST — A `TeX-master` from `.dir-locals.el` was ignored
+
+**Context.** The user wanted to review a whole course (nine Beamer decks) as one PDF in Emacs:
+a combined file `\input`s the decks with `docmute`, and a `.dir-locals.el` in the folder sets
+`TeX-master` to it, so that scrolling the combined PDF follows into each deck's file.
+
+**Found.** In batch Emacs with AUCTeX and texsync turned on from `LaTeX-mode-hook`, a deck
+buffer had `TeX-master` = the combined file, yet `texsync-master-file` returned the deck itself.
+Cause: `run-mode-hooks` runs the mode hooks, then `hack-local-variables` (file and directory
+local variables), then `after-change-major-mode-hook`. Turning the mode on found and cached the
+main file (`texsync--master`) before `TeX-master` arrived; the deck has its own
+`\documentclass`, so it was its own main file. Following from the combined PDF would have
+stopped at the first deck boundary (`texsync--source-window` wants a source whose main file's
+PDF is the PDF shown). The same holds for a `TeX-master` in a file's `Local Variables` block.
+
+**Workaround tried first (in the user's folder, now removed).** An `eval` entry in
+`.dir-locals.el` that cleared `texsync--master`: it worked, but Emacs asks before applying an
+`eval`.
+
+**Fix.** `texsync--find-master` (the old body of the mode's activation: clear the cache, find the
+main file, store a guess in a buffer-local `TeX-master`) runs on activation and again from a
+buffer-local `hack-local-variables-hook`. Test `texsync-test-local-master`: a deck with
+`.dir-locals.el`, a deck in a subfolder with a `Local Variables` block, the combined file itself,
+and the deck again once `.dir-locals.el` is gone. It fails on the old code (8/14) and passes on the
+new; `make compile` clean, `make test` 14/14. Checked also on the user's real folder in batch:
+two decks and the combined file all map to the combined PDF. `make gui-test` not run (it takes
+over the screen).
+
