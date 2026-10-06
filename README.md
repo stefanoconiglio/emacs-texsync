@@ -14,6 +14,9 @@ was called `texsync` until 2026-10-03.
   `texsync-compile-idle-delay` to a number of seconds. `C-c C-c` is no longer needed (if you use
   it, texsync waits for AUCTeX's run).
 - `C-c C-v` (AUCTeX View) opens the PDF window at the place of point.
+- While anything rebuilds the PDF (texsync, AUCTeX, a script or an agent running latexmk, VS
+  Code), you keep seeing the previous one: the PDF window shows a copy, replaced only by a
+  finished build. A build made by another program shows as soon as it is finished.
 
 Needs graphical Emacs (not `emacs -nw`), [pdf-tools](https://github.com/vedang/pdf-tools)
 with continuous scrolling (`pdf-roll.el`), AUCTeX and latexmk. Tested with Emacs 31.1 (pgtk,
@@ -67,6 +70,10 @@ Two minor modes; the major modes stay AUCTeX's LaTeX mode and pdf-tools' PDF vie
 - `texsync-pdf-mode`, turned on by texsync in the PDF buffer it shows: ctrl+click and
   double-click jump to the source.
 
+While the PDF is being built, both mode lines say **Building 12s** (counting); after a failed
+build they say **Build failed** until the next good one (click it for the build log). Builds
+started by another program (VS Code, a terminal) show too, once texsync sees pdflatex running.
+
 Two ways to stop it:
 
 - **`M-x texsync-toggle-follow`** pauses the following, both ways, for the whole document (all
@@ -82,6 +89,9 @@ Two ways to stop it:
 `M-x customize-group RET texsync`:
 
 - `texsync-output-dir` (`"build"`): latexmk's output directory, relative to the main file.
+- `texsync-view-directory` (`~/.cache/texsync`): where the copies of the PDFs shown live, one
+  folder per document, deleted when its PDF buffer is killed or Emacs exits (and, if left by a
+  crash, after 7 days unused).
 - `texsync-compile-idle-delay` (nil: compile only when you save; a number of seconds: also after
   that long without typing, saving the file first).
 - `texsync-compile-on-save` (t).

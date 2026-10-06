@@ -26,6 +26,8 @@
 ;; - Ctrl+click (or double-click) in the PDF jumps to the source (pdf-sync).
 ;; - Saving compiles with latexmk into `texsync-output-dir', and nothing
 ;;   else does (unless `texsync-compile-idle-delay' is set).
+;; - The PDF window shows a copy of latexmk's PDF, replaced only by a finished
+;;   build, texsync's or anyone else's: a PDF being written never shows.
 ;;
 ;; DESIGN.md explains how and why.
 
@@ -61,6 +63,15 @@
 (defcustom texsync-output-dir "build"
   "Directory, relative to the main file, that receives latexmk's output."
   :type 'string)
+
+(defcustom texsync-view-directory
+  (expand-file-name "texsync" (or (getenv "XDG_CACHE_HOME") "~/.cache"))
+  "Where texsync keeps the copies of the PDFs it shows.
+The PDF window shows a copy of latexmk's PDF, replaced only by a finished
+build, so a PDF being rewritten (by texsync, AUCTeX or any other program)
+never shows half-written.  One subdirectory per main file; outside the
+document's folder, so that a synced folder does not upload the copies."
+  :type 'directory)
 
 (defcustom texsync-latexmk-command
   '("latexmk" "-pdf" "-synctex=1" "-interaction=nonstopmode" "-file-line-error")
@@ -264,9 +275,24 @@ first lines; the buffer itself if it has a \\documentclass or a
   "Absolute output directory of MASTER."
   (expand-file-name texsync-output-dir (file-name-directory master)))
 
-(defun texsync--pdf-file (master)
+(defun texsync--built-pdf (master)
   "The PDF that latexmk makes from MASTER."
   (expand-file-name (concat (file-name-base master) ".pdf") (texsync--outdir master)))
+
+(defvar texsync--view-masters (make-hash-table :test 'equal)
+  "PDF shown by texsync (a copy) -> its main file.")
+
+(defun texsync--pdf-file (master)
+  "The PDF that texsync shows for MASTER: a copy of `texsync--built-pdf'.
+It lives in `texsync-view-directory' and changes only by
+`texsync--refresh-view', when a build is finished."
+  (let* ((master (expand-file-name master))
+         (dir (expand-file-name (format "%s-%s" (file-name-base master)
+                                        (substring (md5 master) 0 10))
+                                texsync-view-directory))
+         (view (expand-file-name (concat (file-name-base master) ".pdf") dir)))
+    (puthash view master texsync--view-masters)
+    view))
 
 (defun texsync--beamer-p (master)
   "Non-nil when MASTER is a Beamer document.
@@ -276,10 +302,14 @@ Its class is beamer, or (class set elsewhere) Beamer wrote a .nav file."
                                        (texsync--outdir master)))))
 
 (defun texsync--nav-ranges (master)
-  "Page ranges (FIRST . LAST) of the frames of MASTER, from its .nav file."
-  (let ((nav (expand-file-name (concat (file-name-base master) ".nav")
-                               (texsync--outdir master))))
-    (when (file-readable-p nav)
+  "Page ranges (FIRST . LAST) of the frames of MASTER, from its .nav file.
+The copy made with the PDF shown, when there is one: the .nav in the
+output directory may belong to a build still being written."
+  (let ((nav (cl-find-if #'file-readable-p
+                         (list (concat (file-name-sans-extension (texsync--pdf-file master)) ".nav")
+                               (expand-file-name (concat (file-name-base master) ".nav")
+                                                 (texsync--outdir master))))))
+    (when nav
       (texsync--cached
        'nav nav
        (lambda (f)
@@ -375,7 +405,13 @@ Search backwards when BACKWARD is non-nil.  Point ends at the match start."
        (error nil)))))
 
 (defun texsync--master-of-pdf (pdf)
-  "The main .tex file whose PDF is PDF (it sits in `texsync-output-dir')."
+  "The main .tex file whose PDF is PDF: a copy shown by texsync, or the
+PDF that latexmk wrote (it sits in `texsync-output-dir')."
+  (or (gethash pdf texsync--view-masters)
+      (texsync--master-of-built-pdf pdf)))
+
+(defun texsync--master-of-built-pdf (pdf)
+  "The main .tex file of PDF, a file in `texsync-output-dir'."
   (let* ((dir (file-name-directory pdf))
          (out (file-name-as-directory texsync-output-dir))
          (srcdir (if (string-suffix-p out dir)
@@ -501,11 +537,133 @@ between frames: nil."
                                                 (window-start))))))
     (min 1.0 (max 0.0 (/ (float (cdr xy)) (max 1 (window-body-height nil t)))))))
 
+;;;; The copy shown
+
+;; pdflatex rewrites the PDF in place from its first page on, and a viewer
+;; that reads it meanwhile (pdf-tools draws pages lazily) gets a broken file:
+;; the PDF buffer's raw bytes show through.  So the PDF window shows a copy,
+;; replaced by a rename once a build is finished, whoever ran it.
+
+(defun texsync--file-stamp (file)
+  "Size and modification time of FILE, or nil when it does not exist."
+  (when-let* ((a (file-attributes file)))
+    (list (file-attribute-size a) (file-attribute-modification-time a))))
+
+(defun texsync--mtime (file)
+  "Modification time of FILE, or nil when it does not exist."
+  (when-let* ((a (file-attributes file)))
+    (file-attribute-modification-time a)))
+
+(defun texsync--complete-pdf-p (file)
+  "Non-nil when FILE ends like a finished PDF: %%EOF in its last kilobyte."
+  (when-let* ((a (file-attributes file))
+              (size (file-attribute-size a)))
+    (and (> size 0)
+         (with-temp-buffer
+           (set-buffer-multibyte nil)
+           (insert-file-contents-literally file nil (max 0 (- size 1024)) size)
+           (goto-char (point-min))
+           (search-forward "%%EOF" nil t)))))
+
+(defun texsync--build-ready-p (master)
+  "Non-nil when latexmk's PDF of MASTER is a finished build.
+The PDF ends like a finished one, and no SyncTeX file is being written
+\(pdflatex writes NAME.synctex(busy) until its run ends)."
+  (let ((pdf (texsync--built-pdf master)))
+    (and (file-exists-p pdf)
+         (not (file-exists-p (concat (file-name-sans-extension pdf) ".synctex(busy)")))
+         (texsync--complete-pdf-p pdf))))
+
+(defun texsync--refresh-view (master)
+  "Copy MASTER's finished build to the PDF texsync shows; non-nil if it changed.
+Nothing happens while the build is being written, or when the copy is the
+latest build already.  The SyncTeX file goes along when the same run wrote
+it (it is not older than the PDF), and so does the .nav file.  Each file is
+copied to a temporary name and renamed into place, the PDF last, and only
+if none of them changed while it was being copied."
+  (let ((built (texsync--built-pdf master))
+        (view (texsync--pdf-file master)))
+    (when (and (texsync--build-ready-p master)
+               (not (equal (texsync--mtime built) (texsync--mtime view))))
+      (make-directory (file-name-directory view) t)
+      (let* ((base (file-name-sans-extension built))
+             (vbase (file-name-sans-extension view))
+             (st (let ((f (texsync--synctex-file built)))
+                   (and f (not (time-less-p (texsync--mtime f) (texsync--mtime built))) f)))
+             (nav (let ((f (concat base ".nav"))) (and (file-exists-p f) f)))
+             ;; (FROM . TO), the PDF last
+             (pairs (append (and st (list (cons st (concat vbase (substring st (length base))))))
+                            (and nav (list (cons nav (concat vbase ".nav"))))
+                            (list (cons built view))))
+             (copies nil)
+             (ok t))
+        (dolist (pair pairs)
+          (when ok
+            (let ((stamp (texsync--file-stamp (car pair)))
+                  (tmp (make-temp-file (expand-file-name ".copy-" (file-name-directory view)))))
+              (push (cons tmp (cdr pair)) copies)
+              (condition-case nil
+                  (progn
+                    (copy-file (car pair) tmp t t)
+                    (unless (equal stamp (texsync--file-stamp (car pair)))
+                      (setq ok nil)))
+                (error (setq ok nil))))))
+        ;; the last copy made is the PDF's
+        (setq ok (and ok (texsync--complete-pdf-p (car (car copies)))))
+        (if (not ok)
+            (progn
+              (dolist (c copies) (ignore-errors (delete-file (car c))))
+              nil)
+          ;; a build without SyncTeX data must not keep the old data
+          (unless st
+            (dolist (ext '(".synctex.gz" ".synctex"))
+              (ignore-errors (delete-file (concat vbase ext)))))
+          (dolist (c (reverse copies))
+            (rename-file (car c) (cdr c) t))
+          t)))))
+
+(defun texsync--delete-view-dir (dir)
+  "Delete DIR, the directory of a copy, if it lies inside `texsync-view-directory'."
+  (let ((root (file-name-as-directory (expand-file-name texsync-view-directory)))
+        (dir (and dir (file-name-as-directory (expand-file-name dir)))))
+    (when (and dir (string-prefix-p root dir) (not (equal root dir)))
+      (ignore-errors (delete-directory dir t)))))
+
+(defun texsync--forget-view ()
+  "When a buffer showing a copy is killed, delete the copy's directory."
+  (when-let* ((file (buffer-file-name))
+              ((gethash file texsync--view-masters)))
+    (texsync--delete-view-dir (file-name-directory file))))
+
+(defun texsync--forget-all-views ()
+  "Delete the copies this Emacs made.
+On `kill-emacs-hook': buffers' `kill-buffer-hook' does not run when Emacs exits."
+  (maphash (lambda (view _) (texsync--delete-view-dir (file-name-directory view)))
+           texsync--view-masters))
+
+(defun texsync--prune-views (&optional days)
+  "Delete the copies' directories unused for DAYS (default 7): left by a crash."
+  (let ((limit (time-subtract nil (days-to-time (or days 7)))))
+    (dolist (dir (ignore-errors (directory-files texsync-view-directory t "\\`[^.]")))
+      (when (and (file-directory-p dir) (time-less-p (texsync--mtime dir) limit))
+        (texsync--delete-view-dir dir)))))
+
+(add-hook 'kill-emacs-hook #'texsync--forget-all-views)
+(texsync--prune-views)
+
+(defun texsync--watch-view ()
+  "In a buffer showing a copy: delete it with the buffer, look for new builds."
+  (when (and (buffer-file-name) (gethash (buffer-file-name) texsync--view-masters))
+    (add-hook 'kill-buffer-hook #'texsync--forget-view nil t)
+    (texsync--start-poll)))
+
 ;;;; The PDF window
 
 (defun texsync--pdf-buffer (pdf create)
-  "The buffer visiting PDF; with CREATE, visit it if needed."
+  "The buffer visiting PDF; with CREATE, visit it if needed.
+A buffer visiting latexmk's own PDF is switched over to PDF, the copy."
   (or (find-buffer-visiting pdf)
+      (texsync--adopt-pdf-buffer pdf)
       (when create
         (let ((buf (let ((large-file-warning-threshold nil))
                      (find-file-noselect pdf))))
@@ -514,6 +672,21 @@ between frames: nil."
             (unless (derived-mode-p 'pdf-view-mode)
               (pdf-view-mode)))
           buf))))
+
+(defun texsync--adopt-pdf-buffer (view)
+  "Switch a buffer visiting latexmk's PDF over to VIEW, its copy; return it.
+Its windows stay where they are."
+  (when-let* ((master (gethash view texsync--view-masters))
+              (buf (find-buffer-visiting (texsync--built-pdf master)))
+              ((or (file-exists-p view) (texsync--refresh-view master))))
+    (with-current-buffer buf
+      (set-visited-file-name view t)
+      (set-buffer-modified-p nil)
+      (if (derived-mode-p 'pdf-view-mode)
+          (pdf-view-revert-buffer nil t)
+        (revert-buffer t t t))
+      (texsync--watch-view))
+    buf))
 
 (defun texsync--pdf-window (pbuf create)
   "A window of the selected frame that shows PBUF.
@@ -537,12 +710,16 @@ With CREATE, show PBUF in the window to the right, splitting if needed."
   "Keys of `texsync-pdf-mode'.")
 
 (define-minor-mode texsync-pdf-mode
-  "In a PDF shown by texsync, ctrl+click or double-click jumps to the source."
+  "In a PDF shown by texsync, ctrl+click or double-click jumps to the source.
+The mode line says when the PDF is being built, or when its build failed."
+  :lighter (:eval (texsync--pdf-lighter))
   :keymap texsync-pdf-mode-map)
 
 (defun texsync--setup-pdf (pwin beamer)
   "Set up the PDF buffer shown in PWIN once: fit, scrolling, no auto-revert.
 BEAMER non-nil fits whole slides; otherwise pages scroll continuously."
+  (with-current-buffer (window-buffer pwin)
+    (texsync--watch-view))
   (with-selected-window pwin
     (unless texsync--configured
       (setq texsync--configured t)
@@ -629,12 +806,18 @@ With DISPLAY (interactively), open and show the PDF if it is not shown."
      ((null master)
       (when display
         (user-error "texsync: cannot tell the main file; set `TeX-master'")))
-     ((not (file-exists-p pdf))
+     ((and (not (file-exists-p pdf)) (not (texsync--refresh-view master)))
       (when display
         (puthash master (current-buffer) texsync--show-after)
-        (texsync-compile master)
-        (message "texsync: compiling %s; the PDF opens when it is ready"
-                 (file-name-nondirectory master))))
+        (if (file-exists-p (texsync--built-pdf master))
+            ;; latexmk's PDF is being written: shown once it is finished
+            (progn
+              (texsync--start-poll)
+              (message "texsync: %s is being built; the PDF opens when it is ready"
+                       (file-name-nondirectory master)))
+          (texsync-compile master)
+          (message "texsync: compiling %s; the PDF opens when it is ready"
+                   (file-name-nondirectory master)))))
      (t
       (when-let* ((pbuf (texsync--pdf-buffer pdf display))
                   (pwin (texsync--pdf-window pbuf display)))
@@ -952,6 +1135,83 @@ Called by pdf-sync in the PDF window."
 
 ;;;; Compiling
 
+;;;; Build status in the mode lines
+
+;; While a build runs, the source's and the PDF's mode lines say
+;; "Building 12s"; after a failed build, "Build failed" until the next good
+;; one.  The state lives in two tables, kept up to date by `texsync-compile'
+;; and its sentinel (texsync's own builds) and by `texsync--poll' (builds by
+;; other programs); the mode-line code only reads them, never the disk.
+
+(defvar texsync--builds (make-hash-table :test 'equal)
+  "Main file -> (START . OWN) of the build running: start time, and
+whether it is texsync's own run (or another program's, seen by the poll).")
+
+(defvar texsync--failed (make-hash-table :test 'equal)
+  "Main file -> log buffer of its last texsync build, when that build failed.")
+
+(defvar texsync--tick-timer nil
+  "Timer that redraws the mode lines every second while a build runs.")
+
+(defun texsync--tick ()
+  "Redraw the mode lines; stop when no build runs."
+  (force-mode-line-update t)
+  (when (zerop (hash-table-count texsync--builds))
+    (cancel-timer texsync--tick-timer)
+    (setq texsync--tick-timer nil)))
+
+(defun texsync--build-started (master own)
+  "Note that a build of MASTER runs; OWN non-nil for texsync's own run."
+  (unless (gethash master texsync--builds)
+    (puthash master (cons (float-time) own) texsync--builds))
+  (unless (timerp texsync--tick-timer)
+    (setq texsync--tick-timer (run-with-timer 1 1 #'texsync--tick)))
+  (force-mode-line-update t))
+
+(defun texsync--build-ended (master ok &optional log)
+  "Note that the build of MASTER ended; OK nil means it failed (LOG: its buffer).
+Return the seconds it took, or nil."
+  (let ((entry (gethash master texsync--builds)))
+    (remhash master texsync--builds)
+    (if ok
+        (remhash master texsync--failed)
+      (puthash master (or log t) texsync--failed))
+    (force-mode-line-update t)
+    (and entry (- (float-time) (car entry)))))
+
+(defun texsync--status (master)
+  "Mode-line text for MASTER's build: building, failed, or empty."
+  (cond
+   ((null master) "")
+   ((gethash master texsync--builds)
+    (propertize (format " Building %ds"
+                        (round (- (float-time) (car (gethash master texsync--builds)))))
+                'face 'warning
+                'help-echo "texsync: the PDF is being built"))
+   ((gethash master texsync--failed)
+    (let ((log (gethash master texsync--failed))
+          (map (make-sparse-keymap)))
+      (define-key map [mode-line mouse-1]
+                  (lambda () (interactive)
+                    (if (buffer-live-p (get-buffer log))
+                        (display-buffer log)
+                      (message "texsync: the build log is gone"))))
+      (propertize " Build failed" 'face 'error 'local-map map 'mouse-face 'mode-line-highlight
+                  'help-echo (format "texsync: the last build failed; mouse-1: show %s"
+                                     (if (bufferp log) (buffer-name log) log)))))
+   (t "")))
+
+(defun texsync--lighter ()
+  "Mode-line text of `texsync-mode': Sync or Sync:off, and the build status."
+  (concat (if texsync-follow " Sync" " Sync:off")
+          ;; the cached main file: no file is read during redisplay
+          (texsync--status texsync--master)))
+
+(defun texsync--pdf-lighter ()
+  "Mode-line text of `texsync-pdf-mode': the build status of its main file."
+  (texsync--status (and (buffer-file-name)
+                        (gethash (buffer-file-name) texsync--view-masters))))
+
 (defvar texsync--synctex-asked (make-hash-table :test 'equal)
   "PDF -> its modification time when a rebuild for missing SyncTeX data was asked.")
 
@@ -996,22 +1256,34 @@ the PDF up to date (-g)."
                                    (list (concat "-outdir=" texsync-output-dir)
                                          (file-name-nondirectory master)))
                   :sentinel (lambda (proc _event) (texsync--compiled master proc)))
-                 texsync--processes)))))
+                 texsync--processes)
+        (texsync--build-started master t)))))
 
 (defun texsync--compiled (master proc)
   "Handle the end of latexmk run PROC on MASTER."
   (when (memq (process-status proc) '(exit signal))
     (remhash master texsync--processes)
-    (if (and (eq (process-status proc) 'exit) (zerop (process-exit-status proc)))
-        (texsync--reload master)
-      (message "texsync: %s did not compile; see buffer %s"
-               (file-name-nondirectory master) (buffer-name (process-buffer proc))))
+    (let* ((ok (and (eq (process-status proc) 'exit) (zerop (process-exit-status proc))))
+           (secs (texsync--build-ended master ok (process-buffer proc))))
+      (if ok
+          (progn
+            (texsync--reload master)
+            (message "texsync: built %s%s" (file-name-nondirectory master)
+                     (if secs (format " in %.1f s" secs) "")))
+        (message "texsync: %s did not compile; see buffer %s"
+                 (file-name-nondirectory master) (buffer-name (process-buffer proc)))))
     (when (gethash master texsync--pending)
       (remhash master texsync--pending)
       (texsync-compile master))))
 
 (defun texsync--reload (master)
-  "Reload the PDF of MASTER and sync it again."
+  "Show MASTER's new build: copy it to the PDF shown, revert that, sync again."
+  (texsync--refresh-view master)
+  (texsync--show-build master))
+
+(defun texsync--show-build (master)
+  "Revert the PDF buffer of MASTER and sync again (or show the PDF to the
+source that asked for it)."
   (let ((pbuf (find-buffer-visiting (texsync--pdf-file master)))
         (asker (gethash master texsync--show-after)))
     (when pbuf
@@ -1034,6 +1306,77 @@ the PDF up to date (-g)."
       (condition-case err
           (texsync-sync)
         (error (message "texsync: %s" (error-message-string err)))))))
+
+;;;; Builds by other programs
+
+;; AUCTeX's C-c C-c, an agent's latexmk run, VS Code: texsync's sentinel does
+;; not see these builds, so a timer looks at the built PDFs once a second
+;; while texsync shows a PDF (or a source waits for one).
+
+(defvar texsync--poll-timer nil
+  "Timer of `texsync--poll', running while texsync shows a PDF.")
+
+(defvar texsync--poll-stamps (make-hash-table :test 'equal)
+  "Main file -> size and time of its built PDF at the previous poll.")
+
+(defun texsync--shown-masters ()
+  "Main files whose copy has a buffer, or whose PDF a source waits for."
+  (let (masters)
+    (maphash (lambda (view master)
+               (when (find-buffer-visiting view) (push master masters)))
+             texsync--view-masters)
+    (maphash (lambda (master _) (push master masters)) texsync--show-after)
+    (delete-dups masters)))
+
+(defun texsync--poll-master (master)
+  "Show a build of MASTER made by another program, once it has settled.
+Settled: the built PDF has the size and time it had at the previous poll
+\(latexmk reruns pdflatex at once), it is finished, and no texsync run is
+going on (its sentinel shows its own builds)."
+  (let ((stamp (texsync--file-stamp (texsync--built-pdf master)))
+        (own (process-live-p (gethash master texsync--processes))))
+    ;; another program building: pdflatex writes NAME.synctex(busy) while it runs
+    (unless own
+      (let ((busy (let ((mt (texsync--mtime (concat (file-name-sans-extension
+                                                      (texsync--built-pdf master))
+                                                     ".synctex(busy)"))))
+                    ;; a run that died leaves the file behind: stale after 2 min
+                    (and mt (< (float-time (time-since mt)) 120))))
+            (entry (gethash master texsync--builds)))
+        (cond ((and busy (not entry)) (texsync--build-started master nil))
+              ((and (not busy) entry (not (cdr entry)))
+               (remhash master texsync--builds)
+               (force-mode-line-update t)))))
+    (when (and stamp
+               (equal stamp (gethash master texsync--poll-stamps))
+               (not own)
+               (texsync--refresh-view master))
+      ;; a good build by another program clears an earlier failure
+      (remhash master texsync--failed)
+      (force-mode-line-update t)
+      (texsync--show-build master))
+    (puthash master stamp texsync--poll-stamps)))
+
+(defun texsync--poll ()
+  "Look for finished builds of the PDFs shown; stop when none is shown."
+  (let ((masters (texsync--shown-masters)))
+    (if (null masters)
+        (texsync--stop-poll)
+      (dolist (master masters)
+        (condition-case err
+            (texsync--poll-master master)
+          (error (message "texsync: %s" (error-message-string err))))))))
+
+(defun texsync--start-poll ()
+  "Start `texsync--poll' every second, unless it runs already."
+  (unless (timerp texsync--poll-timer)
+    (setq texsync--poll-timer (run-with-timer 1 1 #'texsync--poll))))
+
+(defun texsync--stop-poll ()
+  "Stop `texsync--poll'."
+  (when (timerp texsync--poll-timer)
+    (cancel-timer texsync--poll-timer))
+  (setq texsync--poll-timer nil))
 
 (defun texsync--after-change (&rest _)
   (when texsync-compile-idle-delay
@@ -1134,7 +1477,7 @@ Ctrl+click in the PDF goes back.  Saving compiles with latexmk.
 \\[texsync-toggle-follow] pauses the following both ways (the mode line
 then says Sync:off); turning this mode off stops everything, compiling
 included, in this buffer."
-  :lighter (:eval (if texsync-follow " Sync" " Sync:off"))
+  :lighter (:eval (texsync--lighter))
   ;; empty: C-c + letter is the user's (e.g. C-c t for `texsync-toggle-follow')
   :keymap (make-sparse-keymap)
   (if texsync-mode

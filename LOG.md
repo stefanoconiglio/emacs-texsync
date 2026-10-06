@@ -45,3 +45,29 @@ RESEARCH_LOG.md; how the code works, in DESIGN.md.
   its idle-compile check. README, DESIGN.md, `try.el` and the mode's docstring say "saving
   compiles".
 - RESEARCH_LOG.md: three decision labels no longer name an author.
+
+## 2026-10-06 (evening)
+
+- The PDF window shows a copy of latexmk's PDF (`texsync-view-directory`, default
+  `~/.cache/texsync`), replaced only by a finished build (`texsync--refresh-view`: `%%EOF`, no
+  `.synctex(busy)`, copied to temporary names and renamed, the PDF last). `texsync--pdf-file` now
+  names the copy, `texsync--built-pdf` latexmk's file.
+- Builds by other programs are shown once settled: `texsync--poll`, every second while a copy is
+  shown; a buffer visiting latexmk's PDF is switched over to the copy; the copy is deleted with
+  its buffer; the frame ranges come from the copy's `.nav`.
+- The cache stays bounded: copies deleted with their buffer, all of this Emacs's on
+  `kill-emacs-hook`, and directories unused for 7 days when texsync loads; never outside
+  `texsync-view-directory`.
+- Tests: five new (copy and half-written build refused, PDF readable during a compile, build by
+  another program, buffer switched over, cache pruning); the compile helper copies the build;
+  the GUI test keeps its copies in a temporary directory; 20 / 20.
+
+## 2026-10-06 (night)
+
+- Build status in the mode lines: `Building Ns` while a build runs (the source's lighter and a new
+  lighter for `texsync-pdf-mode`), `Build failed` after a failed texsync build until a good one
+  (mouse-1: the log buffer); `texsync: built <main> in N s` in the echo area.
+  `texsync--builds`, `texsync--failed`, `texsync--status`, `texsync--lighter`,
+  `texsync--pdf-lighter`, a 1 s ticker while a build runs; `texsync--poll-master` sees other
+  programs' builds through `.synctex(busy)` (stale after 2 min).
+- Test `texsync-test-build-status` (21 tests). DESIGN.md (Compiling, Tests) and README.

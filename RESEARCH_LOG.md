@@ -441,3 +441,73 @@ set to nil and the 7 pending idle timers cancelled. `make test` 15 / 15 (1 new: 
 nothing, a save compiles, the option still works when set). `make gui-test` not run.
 
 **Decision (user).** Rebuild only on save.
+
+## 2026-10-06 18:59 CEST — The PDF turned to garbage during a compile
+
+**Report (user).** As soon as a compile starts, the PDF window shows garbled text ("a PDF rendered
+in ASCII") until it is over; could it keep the old PDF until the new one is ready? Screenshot:
+the PDF window of a lecture deck full of octal escapes, mode line `P34/???` (PDFView), while a
+Claude Code session in the same frame was editing and compiling that deck itself.
+
+**Found.**
+- pdflatex rewrites `build/<main>.pdf` in place, from the first page to the end of the run. Polled
+  every 20 ms with `pdfinfo` during a latexmk rebuild of a 46-page document: unreadable 6 times
+  out of 16.
+- The daemon's texsync PDF buffers were not reverted mid-run (all 9 had
+  `global-auto-revert-ignore-buffer`, none `auto-revert-mode`): pdf-tools itself reads the file
+  lazily, and a read that meets the half-written file fails, leaving the buffer's raw bytes
+  visible. After the run the PDF on disk was complete (59 pages); reverting the buffer by hand
+  restored the view.
+- Builds by others (the agent's latexmk, AUCTeX, VS Code) write the same file, and texsync never
+  reverted after them (noted on 2026-10-03, "Builds from VS Code").
+- SyncTeX records absolute source paths: forward and backward searches give the same answers
+  from a copy of the PDF and its `.synctex.gz` in another directory.
+- latexmk 4.87's `-out2dir` copies the final PDF elsewhere, but with File::Copy into the same
+  file, in place: shorter, not atomic.
+
+**Considered.** (1) Build into a staging directory and copy only texsync's own builds: does not
+help with the agent's builds, the case in the screenshot. (2) Show a copy, replaced atomically
+when any build is finished: chosen.
+
+**Decision (user).** Fix it: keep the old PDF until the new one is ready.
+
+**Done.** The copy (DESIGN.md, "The copy shown"), outside the document's folder (an Insync folder
+would upload every copy); a poll for builds by others; existing buffers switched over.
+
+**Checked besides the tests.**
+- The name of the file pdflatex writes SyncTeX data to during a run: `long.synctex(busy)`, also
+  with compressed output (`-synctex=1`), present in 39 of 51 samples of a run, next to the
+  previous run's `.synctex.gz`. A first attempt to sample it saw nothing: the shell command put
+  the whole `cd … && … &` chain in the background, so the sampling loop ran in another
+  directory.
+- Switching a real pdf-view buffer over, in the user's Emacs daemon without a window: a
+  fixture's built PDF opened in `pdf-view-mode`, `texsync--pdf-buffer` on its copy returned the
+  same buffer, still in `pdf-view-mode`, visiting the copy, unmodified, 4 pages readable, SyncTeX
+  file copied; killing it deleted the copy's directory.
+
+**Results.** `make compile` clean; `make test` 19 / 19 twice, then 20 / 20 with the cache test
+(built PDF unreadable 64 of 100 queries, the copy 0). The new test of a forced latexmk run
+of an 82-page document, querying the page count afresh about every 10 ms: latexmk's PDF failed 65
+of 101 queries (65 of 99 on the second run), the copy 0. `make gui-test` not run (it takes over
+the screen).
+
+**Open.** Seen on screen by the user: a save, and an agent's compile, with the old PDF staying
+until the new one appears. The `.vrb` / `.bbl` / `.toc` redirects still read `build/`.
+
+## 2026-10-06 19:59 CEST — Showing that a build is running
+
+**Request (user).** Show something that says the PDF is being built.
+
+**Design.** Mode lines, not a header line: a header line that comes and goes changes the PDF
+window's height, which makes pdf-roll redraw and shifts the 1/3-height anchor used when the PDF
+leads. Plain text with faces (`warning`, `error`), no icons. The elapsed seconds matter: the
+user's combined course PDF has 577 pages, and its build takes long enough to look like a hang.
+The mode-line code reads tables only; the disk is looked at by the compile, its sentinel and the
+existing 1 s poll (another program's run: `.synctex(busy)`).
+
+**Results.** `make test` 21 / 21 (1 new: building, done, failed and kept, cleared by a good
+build, another program's build seen and cleared, a 5-minute-old busy file ignored). Not tested
+on screen; no build of the user's documents was started for it.
+
+**Limits.** Another program's latexmk can drop the indicator for a moment between pdflatex
+passes; its failures are not detected.

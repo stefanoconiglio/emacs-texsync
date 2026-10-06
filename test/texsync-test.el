@@ -12,6 +12,9 @@
 (defconst texsync-test-dir
   (file-name-directory (or load-file-name buffer-file-name)))
 
+;; The copies of the PDFs shown go to a temporary directory, not the user's cache.
+(setq texsync-view-directory (make-temp-file "texsync-views-" t))
+
 (defun texsync-test--copy-fixtures ()
   "Copy the fixtures into a fresh temporary directory and return it."
   (let ((dir (make-temp-file "texsync-test-" t)))
@@ -19,13 +22,16 @@
     (file-name-as-directory dir)))
 
 (defun texsync-test--latexmk (master)
-  "Compile MASTER synchronously with texsync's command; fail the test on error."
+  "Compile MASTER synchronously with texsync's command; fail the test on error.
+Then copy the build to the PDF texsync shows, as texsync's own compile does."
   (let ((default-directory (file-name-directory master)))
     (make-directory texsync-output-dir t)
     (should (zerop (apply #'call-process (car texsync-latexmk-command) nil nil nil
                           (append (cdr texsync-latexmk-command)
                                   (list (concat "-outdir=" texsync-output-dir)
-                                        (file-name-nondirectory master))))))))
+                                        (file-name-nondirectory master))))))
+    (texsync--refresh-view master)
+    (should (file-exists-p (texsync--pdf-file master)))))
 
 (defun texsync-test--goto-line (n)
   (goto-char (point-min))
@@ -143,6 +149,140 @@ before Emacs applies those variables; each deck is a main file of its own."
     (should (equal (texsync--documentclass lecture) "beamer"))
     (should (texsync--beamer-p lecture))
     (delete-directory dir t)))
+
+;;;; The copy shown
+
+(ert-deftest texsync-test-view-copy ()
+  "The PDF shown is a copy of a finished build, with its SyncTeX data.
+A build still being written is not copied: the copy stays as it was."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (sec (expand-file-name "paper/sec.tex" dir))
+         (built (texsync--built-pdf master))
+         (pdf (texsync--pdf-file master)))
+    (texsync-test--latexmk master)
+    (should-not (equal pdf built))
+    (should (string-prefix-p (file-name-as-directory texsync-view-directory) pdf))
+    (should (equal (texsync--master-of-pdf pdf) master))
+    (should (equal (texsync--master-of-pdf built) master))
+    (should (texsync--synctex-file pdf))
+    (should (equal (texsync--mtime pdf) (texsync--mtime built)))
+    (should (texsync--forward sec 5 pdf))           ; SyncTeX answers from the copy
+    (should-not (texsync--refresh-view master))     ; the copy is the latest build
+    (let ((stamp (texsync--file-stamp pdf))
+          (bytes (with-temp-buffer
+                   (set-buffer-multibyte nil)
+                   (insert-file-contents-literally built)
+                   (buffer-substring (point-min) (/ (point-max) 2)))))
+      ;; latexmk's PDF half written, as pdflatex leaves it mid-run
+      (sleep-for 1.1)
+      (let ((coding-system-for-write 'binary)) (write-region bytes nil built))
+      (should-not (texsync--complete-pdf-p built))
+      (should-not (texsync--build-ready-p master))
+      (should-not (texsync--refresh-view master))
+      (should (equal (texsync--file-stamp pdf) stamp))
+      (should (texsync--complete-pdf-p pdf))
+      ;; and a SyncTeX file being written means a run is going on
+      (texsync-test--latexmk master)
+      (with-temp-file (concat (file-name-sans-extension built) ".synctex(busy)"))
+      (should-not (texsync--build-ready-p master)))
+    (pdf-info-close pdf)
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-view-during-compile ()
+  "While latexmk rewrites its PDF, the copy shown stays readable.
+pdf-tools reads the PDF afresh at every query here: the built PDF fails
+some of them mid-run (the test sees the problem), the copy none."
+  (let* ((dir (make-temp-file "texsync-test-long-" t))
+         (master (expand-file-name "long.tex" dir))
+         (built (texsync--built-pdf master))
+         (pdf (texsync--pdf-file master))
+         (built-errors 0) (view-errors 0) (samples 0))
+    (with-temp-file master
+      (insert "\\documentclass{article}\n\\usepackage{lipsum}\n\\begin{document}\n"
+              "\\lipsum[1-150]\n\\lipsum[1-150]\n\\lipsum[1-150]\n\\end{document}\n"))
+    (texsync-test--latexmk master)
+    (texsync-compile master t)                      ; forced: latexmk rewrites the PDF
+    (let ((proc (gethash master texsync--processes)))
+      (while (process-live-p proc)
+        (cl-incf samples)
+        (dolist (f (list built pdf))
+          (condition-case nil
+              (progn (pdf-info-close f) (pdf-info-number-of-pages f))
+            (error (if (equal f built) (cl-incf built-errors) (cl-incf view-errors)))))
+        (accept-process-output proc 0.01))
+      (while (gethash master texsync--processes) (accept-process-output proc 0.05)))
+    (message "texsync-test-view-during-compile: %d samples, built PDF unreadable %d times, copy %d"
+             samples built-errors view-errors)
+    (should (> samples 5))
+    (should (> built-errors 0))
+    (should (= view-errors 0))
+    (should (equal (texsync--mtime pdf) (texsync--mtime built)))   ; the new build is shown
+    (pdf-info-close pdf)
+    (pdf-info-close built)
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-external-build ()
+  "A build made by another program is copied once it has settled."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (built (texsync--built-pdf master))
+         (pdf (texsync--pdf-file master)))
+    (texsync-test--latexmk master)
+    (let ((old (texsync--mtime pdf))
+          (default-directory (file-name-directory master)))
+      (sleep-for 1.1)
+      ;; another program rebuilds latexmk's PDF
+      (should (zerop (apply #'call-process (car texsync-latexmk-command) nil nil nil
+                            (append (cdr texsync-latexmk-command)
+                                    (list "-g" (concat "-outdir=" texsync-output-dir)
+                                          (file-name-nondirectory master))))))
+      (should-not (equal (texsync--mtime built) old))
+      (texsync--poll-master master)                 ; first sight: not settled yet
+      (should (equal (texsync--mtime pdf) old))
+      (texsync--poll-master master)                 ; unchanged since: copied
+      (should (equal (texsync--mtime pdf) (texsync--mtime built))))
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-adopt-pdf-buffer ()
+  "A buffer visiting latexmk's PDF is switched over to the copy; killing it
+deletes the copy."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (built (texsync--built-pdf master))
+         (pdf (texsync--pdf-file master)))
+    (texsync-test--latexmk master)
+    (let ((buf (let ((auto-mode-alist nil) (large-file-warning-threshold nil))
+                 (find-file-noselect built))))
+      (unwind-protect
+          (progn
+            (should (eq (texsync--pdf-buffer pdf nil) buf))
+            (should (equal (buffer-file-name buf) pdf))
+            (should-not (buffer-modified-p buf))
+            (should (timerp texsync--poll-timer)))
+        (kill-buffer buf)
+        (texsync--stop-poll)))
+    (should-not (file-exists-p (file-name-directory pdf)))
+    (delete-directory dir t)))
+
+(ert-deftest texsync-test-view-cache-bounded ()
+  "Old copies are pruned, new ones kept; nothing outside the cache is deleted."
+  (let* ((old (expand-file-name "old-0123456789" texsync-view-directory))
+         (new (expand-file-name "new-0123456789" texsync-view-directory))
+         (outside (make-temp-file "texsync-outside-" t)))
+    (make-directory old t)
+    (make-directory new t)
+    (set-file-times old (time-subtract nil (days-to-time 8)))
+    (texsync--prune-views)
+    (should-not (file-exists-p old))
+    (should (file-exists-p new))
+    (texsync--delete-view-dir outside)              ; outside the cache: refused
+    (should (file-exists-p outside))
+    (texsync--delete-view-dir texsync-view-directory) ; the cache itself: refused
+    (should (file-exists-p texsync-view-directory))
+    (texsync--delete-view-dir new)
+    (should-not (file-exists-p new))
+    (delete-directory outside t)))
 
 ;;;; Against real SyncTeX output
 
@@ -313,6 +453,8 @@ SyncTeX answers looked up while the data was missing are not kept."
          (sec (expand-file-name "paper/sec.tex" dir))
          (pdf (texsync--pdf-file master)))
     (texsync-test--latexmk master)
+    ;; a build without SyncTeX data: neither latexmk's PDF nor the copy has any
+    (delete-file (texsync--synctex-file (texsync--built-pdf master)))
     (delete-file (texsync--synctex-file pdf))
     (should-not (texsync--synctex-file pdf))
     (should-not (texsync--forward sec 5 pdf))   ; nothing to look up, remembered as nil
@@ -323,7 +465,8 @@ SyncTeX answers looked up while the data was missing are not kept."
       ;; asked once per PDF: no second rebuild while this one runs
       (should-not (texsync--ensure-synctex master pdf))
       (should-not (gethash master texsync--pending))
-      (while (process-live-p proc) (accept-process-output proc 0.1)))
+      ;; until the sentinel has run: it copies the new build, SyncTeX data included
+      (while (gethash master texsync--processes) (accept-process-output proc 0.1)))
     (should (texsync--synctex-file pdf))
     (should (texsync--ensure-synctex master pdf))
     (should (texsync--forward sec 5 pdf))       ; the nil above was not kept
@@ -359,6 +502,77 @@ SyncTeX answers looked up while the data was missing are not kept."
       (advice-remove 'texsync-compile spy)
       (with-current-buffer buf (set-buffer-modified-p nil))
       (kill-buffer buf)
+      (delete-directory dir t))))
+
+(ert-deftest texsync-test-build-status ()
+  "The mode lines say Building while a build runs, Build failed after a failed
+one until a good one, and see builds by other programs through .synctex(busy)."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (view (texsync--pdf-file master))
+         (buf (let ((large-file-warning-threshold nil)) (find-file-noselect master)))
+         (status (lambda () (substring-no-properties (texsync--status master))))
+         (lighter (lambda () (with-current-buffer buf
+                               (substring-no-properties (texsync--lighter)))))
+         (pdf-lighter (lambda () (with-temp-buffer
+                                   (setq buffer-file-name view)
+                                   (prog1 (substring-no-properties (texsync--pdf-lighter))
+                                     (setq buffer-file-name nil)))))
+         (build (lambda ()
+                  (texsync-compile master)
+                  (let ((proc (gethash master texsync--processes)))
+                    (should (process-live-p proc))
+                    (should (string-prefix-p " Building " (funcall status)))
+                    (should (string-match-p "\\` Sync Building [0-9]+s\\'" (funcall lighter)))
+                    (should (string-prefix-p " Building " (funcall pdf-lighter)))
+                    (while (process-live-p proc) (accept-process-output proc 0.1))
+                    (accept-process-output nil 0.1)))))  ; let the sentinel run
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (texsync-mode 1) (texsync-master-file))
+          (should (equal (funcall status) ""))
+          ;; a good build: Building, then nothing
+          (funcall build)
+          (should (equal (funcall status) ""))
+          (should (equal (funcall lighter) " Sync"))
+          (should (zerop (hash-table-count texsync--builds)))
+          ;; a failed build: Build failed, and it stays
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (re-search-forward "^\\\\section{Conclusion}")
+            (insert "\n\\undefinedcommand\n")
+            (let ((texsync-compile-on-save nil)) (save-buffer)))
+          (funcall build)
+          (should (equal (funcall status) " Build failed"))
+          (should (equal (funcall lighter) " Sync Build failed"))
+          (should (equal (funcall pdf-lighter) " Build failed"))
+          (should (buffer-live-p (gethash master texsync--failed)))
+          ;; fixed: the next good build clears it
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (re-search-forward "^\\\\undefinedcommand\n")
+            (replace-match "")
+            (let ((texsync-compile-on-save nil)) (save-buffer)))
+          (funcall build)
+          (should (equal (funcall status) ""))
+          ;; a build by another program: seen by the poll through .synctex(busy)
+          (let ((busy (expand-file-name "build/main.synctex(busy)" (file-name-directory master))))
+            (with-temp-file busy (insert "x"))
+            (texsync--poll-master master)
+            (should (string-prefix-p " Building " (funcall status)))
+            (delete-file busy)
+            (texsync--poll-master master)
+            (should (equal (funcall status) ""))
+            ;; a busy file left by a run that died is not a build
+            (with-temp-file busy (insert "x"))
+            (set-file-times busy (time-subtract nil 300))
+            (texsync--poll-master master)
+            (should (equal (funcall status) ""))))
+      (clrhash texsync--builds)
+      (clrhash texsync--failed)
+      (with-current-buffer buf (set-buffer-modified-p nil))
+      (kill-buffer buf)
+      (ignore-errors (pdf-info-close view))
       (delete-directory dir t))))
 
 (provide 'texsync-test)

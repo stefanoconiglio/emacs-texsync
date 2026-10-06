@@ -13,6 +13,9 @@ Emacs frame: the source on the left, the PDF on the right.
 - **Compiling.** Saving runs latexmk into `build/`, and nothing else does (a pause in typing
   only if `texsync-compile-idle-delay` is set); the PDF reloads and re-syncs when the run
   succeeds.
+- **The PDF shown is a copy** of latexmk's, replaced only by a finished build: while anything
+  rewrites `build/<main>.pdf` (texsync, AUCTeX, an agent, VS Code) the previous PDF stays on
+  screen, and a build made by another program shows as soon as it is finished.
 
 Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-tools with
 `pdf-roll.el` (continuous scrolling), AUCTeX, latexmk.
@@ -43,7 +46,8 @@ Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-
    PDF window    ─► texsync-sync-source ─► backward + forward search ─► source line, height
  after-change ─► idle delay ─► save      │   (only if texsync-compile-idle-delay is set)
  after-save ─► texsync-compile ─► latexmk -outdir=build ─► sentinel
-                                         └── on success: revert PDF, timer 0.1 s, re-sync
+                                         └── on success: copy build → view, revert PDF, timer 0.1 s, re-sync
+ poll, 1 s (while a copy is shown) ─► build/<main>.pdf settled and finished ─► copy, revert, re-sync
  ctrl+click in PDF ─► pdf-sync backward search ─► redirect (.vrb) ─► source, point moved
                                                 └─► texsync--after-backward-jump
 ```
@@ -72,7 +76,8 @@ The document class (to tell Beamer) is read from the main file, or else from the
 preamble `\input`s before `\begin{document}` (one level); if neither names it, a `.nav` file in
 `build/` (Beamer writes one) marks a Beamer document.
 
-The PDF is `<dir of main>/build/<main>.pdf`. `texsync-mode` also sets, buffer-locally,
+latexmk writes `<dir of main>/build/<main>.pdf`; the PDF window shows a copy of it (next
+section). `texsync-mode` also sets, buffer-locally,
 `TeX-output-dir` and AUCTeX's viewer to `texsync-view`, so `C-c C-v` and `C-c C-c View` show the
 PDF in the right-hand window at the place of point.
 
@@ -236,12 +241,59 @@ window (`texsync--pdf-px`), so both start at the same height, and point is put o
 another `\input` file replaces the source window's buffer. Backward searches use x = 0.25 of
 the page width: on a two-column page the source follows the left column (known limitation).
 
+### The copy shown
+
+**Why.** pdflatex rewrites `build/<main>.pdf` in place, from its first page to the end of the run.
+pdf-tools reads the file lazily (a page when it is drawn, the page count when it is asked), so a
+read in that window fails and the PDF buffer's raw bytes show through, the mode line reading
+`P34/???`. Measured on a 46-page document: polled every 20 ms during a latexmk rebuild, the file
+was unreadable 6 times out of 16 (`pdfinfo`); in the test below, 65 of about 100 page-count
+queries failed. Any writer does it: texsync's run, AUCTeX's `C-c C-c`, an agent's latexmk, VS Code.
+
+**What.** The PDF buffer visits a copy, `texsync--pdf-file`:
+`texsync-view-directory/<main>-<first 10 hex digits of md5(main's path)>/<main>.pdf`, by default
+under `~/.cache/texsync`, outside the document's folder so that a synced folder (Google Drive
+through Insync, here) does not upload every copy. SyncTeX records absolute source paths, so the
+copy's SyncTeX file answers as latexmk's does (checked: same forward and backward answers from a
+copy in another directory). `texsync--built-pdf` is latexmk's file; `texsync--view-masters` maps
+each copy back to its main file (`texsync--master-of-pdf`), latexmk's PDFs still map by their
+place in `build/`.
+
+**When the copy changes** (`texsync--refresh-view`): only when latexmk's PDF is a finished build
+(`texsync--build-ready-p`: `%%EOF` in its last kilobyte, and no `<main>.synctex(busy)`, which
+pdflatex keeps until its run ends) and newer than the copy (modification times differ; copies
+keep latexmk's time). The SyncTeX file goes along when the same run wrote it (not older than the
+PDF), otherwise the copy's old one is deleted, so that a build without SyncTeX data is rebuilt as
+before (`texsync--ensure-synctex`); the `.nav` file goes along too, and the frame ranges are read
+from the copy's `.nav`. Each file is copied to a temporary name in the copy's directory, its size
+and time checked again, and only when nothing changed and the PDF's copy is finished are they
+renamed into place, the PDF last. A rename is atomic: epdfinfo, which has the old copy open,
+keeps reading it until the buffer is reverted.
+
+**Who refreshes it.** texsync's sentinel, after a successful run (`texsync--reload`: copy, then
+`texsync--show-build`: revert, re-sync, or show the PDF to the source that asked for it). For
+builds made by others, a timer (`texsync--poll`, every second, only while a copy has a buffer or a
+source waits for one) looks at each built PDF; it copies one whose size and time are the same as at
+the previous poll (latexmk reruns pdflatex at once, so a pass between quick reruns is not shown;
+after a pause of more than a second between passes, as for a bibliography run, an intermediate
+pass with `??` references can show briefly) and while no texsync run is going on for it. `texsync-sync` makes the copy when there is none yet; if
+latexmk's PDF exists but is being written, it waits for the poll instead of compiling.
+
+**Buffers.** A buffer that visits latexmk's PDF (opened before this change, or by hand) is switched
+over to the copy (`texsync--adopt-pdf-buffer`, `set-visited-file-name`), so its windows stay.
+
+**The cache stays bounded.** When a buffer showing a copy is killed, the copy's directory is
+deleted; when Emacs exits (`kill-emacs-hook`, since buffers' kill hooks do not run then), every copy
+it made; when texsync is loaded, directories unused for 7 days (left by a crash). Deletion is
+refused outside `texsync-view-directory`.
+
 ### Compiling
 
 `texsync-compile` runs `latexmk -pdf -synctex=1 -interaction=nonstopmode -file-line-error
 -outdir=build <main>` asynchronously in the main file's directory, output in buffer
 `*texsync <main>*`. One run per main file at a time; a request during a run queues one more.
-On exit 0 the PDF buffer is reverted (epdfinfo reopens the document and its SyncTeX data) and,
+On exit 0 the build is copied (previous section) and the PDF buffer is reverted (epdfinfo reopens
+the document and its SyncTeX data) and,
 after a 0.1 s timer that lets redisplay rebuild pdf-roll's page overlays, the selected source
 window is synced again. On failure the old view stays and a message names the log buffer.
 With a prefix argument (`force`) latexmk gets `-g` and rebuilds even when it holds the PDF up to
@@ -267,12 +319,28 @@ and rebuilt at every pause in typing, far more often than wanted). When it is a 
 buffer, and saving compiles (`texsync-compile-on-save`). By default only an explicit save
 compiles.
 
+**Build status in the mode lines.** While a build runs, the source's lighter reads
+`Sync Building 12s` and the PDF's (`texsync-pdf-mode`, which had none) ` Building 12s`, in the
+`warning` face, counting the seconds since the build started: a large document (a 577-page course
+PDF) takes long enough that a silent build looks like a hang. After a failed texsync build both
+read ` Build failed` in the `error` face until a good build; mouse-1 on it shows the log buffer.
+A good build prints `texsync: built <main> in N s`. The mode-line code reads only two tables,
+never the disk (it runs at every redisplay, and documents sit in synced folders):
+`texsync--builds` (main file → start time, and whether the run is texsync's own) and
+`texsync--failed` (main file → log buffer). `texsync-compile` and its sentinel keep them for
+texsync's own runs; `texsync--poll` (every second while a PDF is shown) for other programs',
+through `<main>.synctex(busy)`, which pdflatex writes while it runs — a busy file untouched for
+2 minutes is a dead run's leftover and counts as no build. A good build by another program also
+clears `Build failed`. A 1 s timer redraws the mode lines only while some build runs. For
+another program's latexmk the indicator can drop for a moment between pdflatex passes, when no
+busy file exists; a failure of another program's build is not detected.
+
 ### pdf-tools workarounds
 
 - PDFs are visited with `large-file-warning-threshold` nil (a 17 MB deck asked for confirmation),
   and put in `pdf-view-mode` if pdf-tools is not installed as the `.pdf` handler.
-- The PDF buffer ignores `global-auto-revert-mode`: reverting while latexmk rewrites the file
-  breaks; texsync reverts after a successful run.
+- The PDF buffer ignores `global-auto-revert-mode`: it visits the copy, which only texsync
+  replaces, and texsync reverts it then.
 - In roll mode, `pdf-misc-size-indication-minor-mode` measures the selected window (the source
   window here) and signals an error on every redisplay; texsync turns it off in that buffer.
 
@@ -289,12 +357,25 @@ compiles.
   the PDF's height, nor the PDF above page 1; alignment is then off by that much.
 - Frames written as `\frame{…}` or `\againframe` are not recognised.
 - The main-file guess looks only in the file's own directory.
-- A compile that fails may leave a partly written PDF on disk; the displayed pages stay, pages
-  not yet rendered may fail until the next successful run.
+- The answers that SyncTeX sends to `.vrb`, `.bbl` and `.toc` files are redirected by reading
+  those files in `build/`, not from the copy: during a build they may already be the new run's.
+- A failed build leaves the previous copy on screen. If latexmk's PDF is half written and no
+  build is running (a run killed midway) when a document is first shown, texsync waits for a
+  finished build: save to rebuild.
 
 ## Tests
 
-- `make test`: 14 ERT tests, headless (about 8 s; they compile the fixtures with latexmk).
+- `make test`: 21 ERT tests, headless (about 20 s; they compile the fixtures with latexmk, and
+  keep the copies in a temporary `texsync-view-directory`).
+  - The copy shown: after a build the copy and its SyncTeX file exist outside the document's
+    folder, map back to the main file and answer a forward search; a half-written latexmk PDF,
+    or a `.synctex(busy)` file, is not copied and the copy stays as it was. During a forced
+    latexmk run of an 82-page document, pdf-tools asked for the page count afresh about every
+    10 ms: latexmk's PDF fails some queries (65 of about 100), the copy none, and the new build
+    is shown afterwards. A rebuild by another program is copied at the second poll, not the
+    first. A buffer visiting latexmk's PDF is switched over to the copy, unmodified, and killing
+    it deletes the copy. Copies unused for 8 days are pruned, new ones kept; nothing outside the
+    cache, nor the cache itself, is deleted.
   - Pure functions: frame bounds for every line of the fixture deck (a commented-out frame
     included); structural lines; candidate order; overlay choice; main-file guess (unique,
     ambiguous, explicit `TeX-master`); a `TeX-master` from `.dir-locals.el` and from a file's
@@ -315,6 +396,12 @@ compiles.
   - Missing SyncTeX data: with the article's `.synctex.gz` deleted a lookup gives nil, one forced
     rebuild (`-g`) starts and a second request does not queue another; afterwards the file is
     back and the same lookup answers (the nil was not kept).
+  - Compile only on save: by default an edit schedules nothing; a save compiles; a numeric
+    `texsync-compile-idle-delay` still schedules the idle save.
+  - Build status: during a build of the article both lighters read `Building Ns`, after it
+    nothing; with an undefined control sequence `Build failed`, which stays, with the log buffer
+    kept; fixed, the next build clears it; a fresh `.synctex(busy)` makes the poll show another
+    program's build, its removal clears it, and one 5 minutes old is ignored.
 - `make gui-test`: 32 checks in a graphical `emacs -Q`, fullscreen, keys and mouse events sent
   through `execute-kbd-macro` so that the command loop, `post-command-hook` and timers run as
   for a user. **It takes over the screen for about a minute: run it when the machine is free.**
