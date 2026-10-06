@@ -361,15 +361,17 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
                                r))))
         (gui-test--goto (gui-test--line-of "^Paragraph 10 sentence 4"))
         (gui-test--wait 0.5)
-        ;; Edit, pause, and let texsync save, compile, reload and re-sync.
+        ;; Edit, pause, and let texsync save, compile, reload and re-sync (idle
+        ;; compiling is off by default; the edits are made with it on).
         (let ((mtime (file-attribute-modification-time (file-attributes pdf))))
-          (save-excursion
-            (goto-char (point-min))
-            (forward-line 1)
-            (dotimes (k 10)
-              (insert (format "Inserted sentence %d for the reload test, enough words for a line.\n" k))))
+          (let ((texsync-compile-idle-delay 1.5))
+            (save-excursion
+              (goto-char (point-min))
+              (forward-line 1)
+              (dotimes (k 10)
+                (insert (format "Inserted sentence %d for the reload test, enough words for a line.\n" k)))))
           (gui-test--check
-           "pause after an edit saves and recompiles"
+           "with texsync-compile-idle-delay set, a pause after an edit saves and recompiles"
            (gui-test--wait-for
             30 (lambda ()
                  (and (not (buffer-modified-p))

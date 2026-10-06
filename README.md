@@ -9,9 +9,10 @@ was called `texsync` until 2026-10-03.
 - Scroll or page the PDF → the source follows: the frame of the slide, or the line typeset a
   third of the way down the PDF, at the same height. The window you act on leads.
 - Ctrl+click (or double-click) in the PDF → jump to the exact source.
-- Save, or pause 1.5 s after typing → latexmk compiles into `build/` and the PDF reloads.
-  The pause **saves the file**; `(setq texsync-compile-idle-delay nil)` compiles only when you
-  save. `C-c C-c` is no longer needed (if you use it, texsync waits for AUCTeX's run).
+- Save → latexmk compiles into `build/` and the PDF reloads. Nothing compiles until you save.
+  To compile also after a pause in typing (which then saves the file for you), set
+  `texsync-compile-idle-delay` to a number of seconds. `C-c C-c` is no longer needed (if you use
+  it, texsync waits for AUCTeX's run).
 - `C-c C-v` (AUCTeX View) opens the PDF window at the place of point.
 
 Needs graphical Emacs (not `emacs -nw`), [pdf-tools](https://github.com/vedang/pdf-tools)
@@ -74,14 +75,15 @@ Two ways to stop it:
   argument it switches on (positive) or off (zero or negative). It has no key of its own; bind
   one if you use it often, e.g. `(keymap-set texsync-mode-map "C-c t" #'texsync-toggle-follow)`.
 - **`M-x texsync-mode`** turns texsync off in that buffer altogether: no following, no
-  compiling on save or pause, and AUCTeX's View goes back to your usual viewer.
+  compiling on save, and AUCTeX's View goes back to your usual viewer.
 
 ## Options
 
 `M-x customize-group RET texsync`:
 
 - `texsync-output-dir` (`"build"`): latexmk's output directory, relative to the main file.
-- `texsync-compile-idle-delay` (1.5 s; nil: compile only on save).
+- `texsync-compile-idle-delay` (nil: compile only when you save; a number of seconds: also after
+  that long without typing, saving the file first).
 - `texsync-compile-on-save` (t).
 - `texsync-sync-delay` (0.15 s after the last motion).
 - `texsync-beamer-overlay` (`last`; or `first`): which overlay of a frame to show.

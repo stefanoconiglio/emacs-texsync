@@ -131,7 +131,7 @@ after a page break maps to the foot of the previous page (epdfinfo returns only 
 line's records; the first is page-break glue). Once in 60 fixture sentences. Fix would need all
 records (synctex CLI or own `.synctex.gz` parser).
 
-**Decision (Claude, user to confirm).** Default overlay `last` (the complete slide); `first` is
+**Decision (to be confirmed by the user).** Default overlay `last` (the complete slide); `first` is
 an option. Key bindings: none of its own (`C-c` + letter is reserved for users); View is
 AUCTeX's `C-c C-v`.
 
@@ -238,7 +238,7 @@ accepted; the project is finished for now.
 of it: `omarchy-follow.el` moved to a separate local repository with the user's Emacs settings
 (not published; that decision is open). `try.el` turns it on only when it is on the load path.
 
-**Decisions (Claude).** Folder renamed from ~/repos/latexeditor to ~/repos/texsync (a link keeps
+**Decisions.** Folder renamed from ~/repos/latexeditor to ~/repos/texsync (a link keeps
 the old path). License GPL-3.0-or-later, as Emacs, AUCTeX and pdf-tools. Personal details
 (document names, quotes from the user's text and remarks) removed from this log before
 publishing; measurements and mistakes kept. AGENTS.md added with the working rules.
@@ -330,7 +330,7 @@ PDF); turning `texsync-mode` off already stopped both directions, but also compi
 View redirect. Added `texsync-toggle-follow`: pauses both directions for every file of the
 document, from a source or the PDF, and keeps compiling, View and ctrl+click; the lighter shows
 `Sync:off`. `texsync-mode` now has an (empty) keymap so a key can be bound to it. `make test`
-12 / 12 (1 new). Decision (Claude): no default key (`C-c` + letter is the user's).
+12 / 12 (1 new). Decision: no default key (`C-c` + letter is the user's).
 
 **Note for next time.** After changing texsync, the running daemon must reload it
 (`emacsclient --eval '(load "~/repos/texsync/texsync.el" nil t)'`) or be restarted; a new
@@ -425,3 +425,19 @@ new; `make compile` clean, `make test` 14/14. Checked also on the user's real fo
 two decks and the combined file all map to the combined PDF. `make gui-test` not run (it takes
 over the screen).
 
+
+## 2026-10-06 11:43 CEST — Compile only on save
+
+**Report (user).** texsync rebuilds the PDF too often, seemingly on its own; it should rebuild
+only when the user saves.
+
+**Found (read-only, in the user's Emacs daemon).** `texsync-compile-idle-delay` was 1.5: after
+every pause of 1.5 s in typing, texsync saved the buffer and the save compiled. Idle timers were
+pending in 5 of the 9 open lecture files. No other build source was running (no VS Code, no
+stray latexmk).
+
+**Done.** Default changed to nil (only a save compiles); in the running daemon the variable was
+set to nil and the 7 pending idle timers cancelled. `make test` 15 / 15 (1 new: an edit schedules
+nothing, a save compiles, the option still works when set). `make gui-test` not run.
+
+**Decision (user).** Rebuild only on save.

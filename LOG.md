@@ -35,3 +35,13 @@ RESEARCH_LOG.md; how the code works, in DESIGN.md.
 - Test `texsync-test-local-master` (14 tests). DESIGN.md (main file, tests) and README.md
   (`TeX-master` from `.dir-locals.el`, with an example) updated.
 
+
+## 2026-10-06
+
+- `texsync-compile-idle-delay` defaults to nil: only saving compiles. The 1.5 s pause after an
+  edit saved the buffer and rebuilt the PDF, far more often than wanted (user's report). The
+  option still works when set to a number.
+- Test `texsync-test-compile-only-on-save` (15 tests); the GUI test sets the delay itself for
+  its idle-compile check. README, DESIGN.md, `try.el` and the mode's docstring say "saving
+  compiles".
+- RESEARCH_LOG.md: three decision labels no longer name an author.

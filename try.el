@@ -4,7 +4,7 @@
 ;;
 ;; Opens FILE.tex with texsync-mode on.
 ;; C-c C-v shows the PDF on the right (compiling first if build/ has none).
-;; Saving, or a pause after typing, saves and recompiles.
+;; Saving recompiles.
 
 ;;; Code:
 

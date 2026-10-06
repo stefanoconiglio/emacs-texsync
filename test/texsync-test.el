@@ -330,5 +330,36 @@ SyncTeX answers looked up while the data was missing are not kept."
     (pdf-info-close pdf)
     (delete-directory dir t)))
 
+(ert-deftest texsync-test-compile-only-on-save ()
+  "By default an edit schedules no save and no compile; saving does compile."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (main (expand-file-name "paper/main.tex" dir))
+         (buf (let ((large-file-warning-threshold nil)) (find-file-noselect main)))
+         (compiled nil)
+         (spy (lambda (&rest _) (setq compiled t))))
+    (should (null (default-value 'texsync-compile-idle-delay)))
+    (advice-add 'texsync-compile :override spy)
+    (unwind-protect
+        (with-current-buffer buf
+          (texsync-mode 1)
+          (goto-char (point-max))
+          (insert "% an edit\n")
+          (should-not texsync--idle-timer)          ; nothing will save or compile
+          (should (buffer-modified-p))
+          (let ((texsync-compile-idle-delay 1.5))   ; the option still works when set
+            (insert "% another\n")
+            (should (timerp texsync--idle-timer))
+            (cancel-timer texsync--idle-timer))
+          (setq compiled nil)
+          (save-buffer)
+          (let ((end (+ (float-time) 3)))            ; compile-on-save runs on a 0.3 s timer
+            (while (and (not compiled) (< (float-time) end))
+              (accept-process-output nil 0.05)))
+          (should compiled))
+      (advice-remove 'texsync-compile spy)
+      (with-current-buffer buf (set-buffer-modified-p nil))
+      (kill-buffer buf)
+      (delete-directory dir t))))
+
 (provide 'texsync-test)
 ;;; texsync-test.el ends here

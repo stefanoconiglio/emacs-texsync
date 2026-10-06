@@ -10,8 +10,9 @@ Emacs frame: the source on the left, the PDF on the right.
   frame of the slide shown, other documents to the line typeset a third of the way down the PDF
   window, at the same height. Whichever window the last command acted on leads.
 - **Ctrl+click** (or double-click) in the PDF jumps to the exact source, through pdf-sync.
-- **Compiling.** Saving, or pausing 1.5 s after an edit, runs latexmk into `build/`; the PDF
-  reloads and re-syncs when the run succeeds.
+- **Compiling.** Saving runs latexmk into `build/`, and nothing else does (a pause in typing
+  only if `texsync-compile-idle-delay` is set); the PDF reloads and re-syncs when the run
+  succeeds.
 
 Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-tools with
 `pdf-roll.el` (continuous scrolling), AUCTeX, latexmk.
@@ -40,7 +41,7 @@ Requirements: graphical Emacs (pdf-tools draws images, so not `emacs -nw`), pdf-
  post-command-hook (global) ─► window the command acted on ─► timer 0.15 s
    source window ─► texsync-sync ─► forward search (epdfinfo) ─► place PDF page / vscroll
    PDF window    ─► texsync-sync-source ─► backward + forward search ─► source line, height
- after-change ─► idle 1.5 s ─► save      │
+ after-change ─► idle delay ─► save      │   (only if texsync-compile-idle-delay is set)
  after-save ─► texsync-compile ─► latexmk -outdir=build ─► sentinel
                                          └── on success: revert PDF, timer 0.1 s, re-sync
  ctrl+click in PDF ─► pdf-sync backward search ─► redirect (.vrb) ─► source, point moved
@@ -260,9 +261,11 @@ would also start texsync's latexmk, and two TeX runs would write the same `build
 compile-on-save waits 0.3 s and then, while AUCTeX has a live process for the same main file
 (`TeX-process`), re-checks every second; texsync's run starts after AUCTeX's ends.
 
-Idle compiling: an edit (re)starts an idle timer (`texsync-compile-idle-delay`, 1.5 s); when it
-fires on a modified buffer it saves the buffer, and saving compiles
-(`texsync-compile-on-save`).
+Idle compiling, off by default (`texsync-compile-idle-delay` nil, since 2026-10-06: it saved
+and rebuilt at every pause in typing, far more often than wanted). When it is a number, an edit
+(re)starts an idle timer of that many seconds; when it fires on a modified buffer it saves the
+buffer, and saving compiles (`texsync-compile-on-save`). By default only an explicit save
+compiles.
 
 ### pdf-tools workarounds
 
