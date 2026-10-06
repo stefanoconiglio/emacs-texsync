@@ -24,8 +24,8 @@
 ;;   shown, or the line typeset a third of the way down the PDF window.
 ;;   Whichever window the last command acted on leads.
 ;; - Ctrl+click (or double-click) in the PDF jumps to the source (pdf-sync).
-;; - Saving compiles with latexmk into `texsync-output-dir'; so does a pause
-;;   in typing (`texsync-compile-idle-delay').
+;; - Saving compiles with latexmk into `texsync-output-dir', and nothing
+;;   else does (unless `texsync-compile-idle-delay' is set).
 ;;
 ;; DESIGN.md explains how and why.
 
@@ -72,9 +72,9 @@
   "Non-nil means saving a source file compiles its main file."
   :type 'boolean)
 
-(defcustom texsync-compile-idle-delay 1.5
-  "Seconds of idleness after an edit before the buffer is saved and compiled.
-nil means only an explicit save compiles."
+(defcustom texsync-compile-idle-delay nil
+  "nil: only saving compiles.  A number: also compile after that many
+seconds without typing after an edit, saving the buffer first."
   :type '(choice (const :tag "Off" nil) number))
 
 (defcustom texsync-sync-delay 0.15
@@ -1130,10 +1130,10 @@ AUCTeX's own commands agree.  Run when the mode is turned on and again by
 
 Moving or scrolling in the source moves the PDF, and the other way
 round; AUCTeX's View (\\[TeX-view]) or \\[texsync-view] shows it.
-Ctrl+click in the PDF goes back.  Saving, or pausing after an edit,
-compiles with latexmk.  \\[texsync-toggle-follow] pauses the following
-both ways (the mode line then says Sync:off); turning this mode off
-stops everything, compiling included, in this buffer."
+Ctrl+click in the PDF goes back.  Saving compiles with latexmk.
+\\[texsync-toggle-follow] pauses the following both ways (the mode line
+then says Sync:off); turning this mode off stops everything, compiling
+included, in this buffer."
   :lighter (:eval (if texsync-follow " Sync" " Sync:off"))
   ;; empty: C-c + letter is the user's (e.g. C-c t for `texsync-toggle-follow')
   :keymap (make-sparse-keymap)
