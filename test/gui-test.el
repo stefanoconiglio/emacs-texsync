@@ -15,6 +15,8 @@
 (defconst gui-test--dir (file-name-directory load-file-name))
 (add-to-list 'load-path (expand-file-name ".." gui-test--dir))
 (require 'texsync)
+;; The copies of the PDFs shown go to a temporary directory, not the user's cache.
+(setq texsync-view-directory (make-temp-file "texsync-gui-views-" t))
 (require 'tex nil t)
 
 (defvar gui-test--failures 0)
