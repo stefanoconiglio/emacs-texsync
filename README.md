@@ -70,8 +70,11 @@ Two minor modes; the major modes stay AUCTeX's LaTeX mode and pdf-tools' PDF vie
 - `texsync-pdf-mode`, turned on by texsync in the PDF buffer it shows: ctrl+click and
   double-click jump to the source.
 
-While the PDF is being built, both mode lines say **Building 12s** (counting); after a failed
-build they say **Build failed** until the next good one (click it for the build log). Builds
+Under the PDF, a small pane shows the build log: latexmk's output scrolls past while it works,
+and its top line says **Building ... 12 s**, **Built in 6.2 s at 23:10** or **Build FAILED**.
+`(setq texsync-log-height nil)` removes the pane; a number sets its height in lines (6).
+While the PDF is being built, both mode lines also say **Building 12s** (counting); after a
+failed build they say **Build failed** until the next good one (click it for the build log). Builds
 started by another program (VS Code, a terminal) show too, once texsync sees pdflatex running.
 
 Two ways to stop it:
@@ -92,6 +95,7 @@ Two ways to stop it:
 - `texsync-view-directory` (`~/.cache/texsync`): where the copies of the PDFs shown live, one
   folder per document, deleted when its PDF buffer is killed or Emacs exits (and, if left by a
   crash, after 7 days unused).
+- `texsync-log-height` (6): lines of the build log pane under the PDF; nil: no pane.
 - `texsync-compile-idle-delay` (nil: compile only when you save; a number of seconds: also after
   that long without typing, saving the file first).
 - `texsync-compile-on-save` (t).
