@@ -547,6 +547,8 @@ one until a good one, and see builds by other programs through .synctex(busy)."
           (should (equal (funcall lighter) " Sync Build failed"))
           (should (equal (funcall pdf-lighter) " Build failed"))
           (should (buffer-live-p (gethash master texsync--failed)))
+          (should (string-match-p "FAILED" (with-current-buffer (texsync--log-buffer master)
+                                             (texsync--log-header))))
           ;; fixed: the next good build clears it
           (with-current-buffer buf
             (goto-char (point-min))
@@ -573,6 +575,47 @@ one until a good one, and see builds by other programs through .synctex(busy)."
       (with-current-buffer buf (set-buffer-modified-p nil))
       (kill-buffer buf)
       (ignore-errors (pdf-info-close view))
+      (delete-directory dir t))))
+
+(ert-deftest texsync-test-log-pane ()
+  "The build log pane: made once under the PDF window, latexmk's output arriving
+in it with the pane at the end, a header saying building, then built."
+  (let* ((dir (texsync-test--copy-fixtures))
+         (master (expand-file-name "paper/main.tex" dir))
+         (header (lambda () (with-current-buffer (texsync--log-buffer master)
+                              (substring-no-properties (texsync--log-header))))))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((pwin (selected-window))   ; stands in for the PDF window
+                 (w (progn (set-window-buffer pwin (get-buffer-create "*fake pdf*"))
+                           (texsync--log-window pwin master t))))
+            (should (window-parameter w 'texsync-log))
+            (should (= (window-total-height w) texsync-log-height))
+            (should (window-dedicated-p w))
+            (should (window-preserved-size w))           ; its height is kept
+            (should (eq (window-buffer w) (texsync--log-buffer master)))
+            (should (eq (texsync--log-window pwin master t) w))   ; not a second pane
+            (should (= (length (window-list)) 2))
+            (should (string-match-p "no build yet" (funcall header)))
+            (texsync-compile master)
+            (let ((proc (gethash master texsync--processes)))
+              (should (string-match-p "\\` Building main\\.tex \\.\\.\\. [0-9]+ s\\'" (funcall header)))
+              (while (process-live-p proc) (accept-process-output proc 0.1))
+              (accept-process-output nil 0.1))
+            (with-current-buffer (texsync--log-buffer master)
+              (should (string-match-p "\\$ latexmk" (buffer-string)))
+              (should (string-match-p "Latexmk" (buffer-string)))      ; latexmk's own output
+              (should (string-match-p "--- built in [0-9.]+ s ---" (buffer-string)))
+              (should (= (window-point w) (point-max))))
+            (should (string-match-p "\\` Built main\\.tex in [0-9.]+ s at [0-9][0-9]:[0-9][0-9]\\'"
+                                    (funcall header)))
+            ;; a second main file of the same name has a log of its own
+            (let ((other (expand-file-name "lectures/main.tex" dir)))
+              (should-not (eq (texsync--log-buffer other) (texsync--log-buffer master))))))
+      (clrhash texsync--builds)
+      (clrhash texsync--failed)
+      (ignore-errors (pdf-info-close (texsync--pdf-file master)))
       (delete-directory dir t))))
 
 (provide 'texsync-test)

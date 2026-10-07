@@ -79,6 +79,12 @@ document's folder, so that a synced folder does not upload the copies."
 `-outdir=' with `texsync-output-dir' and the main file are appended."
   :type '(repeat string))
 
+(defcustom texsync-log-height 6
+  "Lines of the build log pane under the PDF, or nil for no pane.
+The pane shows latexmk's output as it comes, under a line that says
+whether a build runs, how long it took, or that it failed."
+  :type '(choice (const :tag "No pane" nil) integer))
+
 (defcustom texsync-compile-on-save t
   "Non-nil means saving a source file compiles its main file."
   :type 'boolean)
@@ -693,7 +699,11 @@ Its windows stay where they are."
 With CREATE, show PBUF in the window to the right, splitting if needed."
   (or (get-buffer-window pbuf)
       (when create
-        (let ((w (or (window-in-direction 'right) (split-window-right))))
+        (let ((w (let ((r (window-in-direction 'right)))
+                   ;; not the log pane under a PDF window: the window above it
+                   (when (and r (window-parameter r 'texsync-log))
+                     (setq r (window-in-direction 'above r)))
+                   (or r (split-window-right)))))
           (set-window-buffer w pbuf)
           w))))
 
@@ -823,6 +833,8 @@ With DISPLAY (interactively), open and show the PDF if it is not shown."
                   (pwin (texsync--pdf-window pbuf display)))
         (let ((beamer (texsync--beamer-p master)))
           (texsync--setup-pdf pwin beamer)
+          ;; the build log pane under it: made when the PDF is shown on request
+          (texsync--log-window pwin master display)
           (cond
            ;; without SyncTeX data there is nothing to look up (rebuilt once)
            ((not (texsync--ensure-synctex master pdf)))
@@ -1150,6 +1162,9 @@ whether it is texsync's own run (or another program's, seen by the poll).")
 (defvar texsync--failed (make-hash-table :test 'equal)
   "Main file -> log buffer of its last texsync build, when that build failed.")
 
+(defvar texsync--last-built (make-hash-table :test 'equal)
+  "Main file -> (TIME . SECONDS) of its last good texsync build.")
+
 (defvar texsync--tick-timer nil
   "Timer that redraws the mode lines every second while a build runs.")
 
@@ -1174,7 +1189,11 @@ Return the seconds it took, or nil."
   (let ((entry (gethash master texsync--builds)))
     (remhash master texsync--builds)
     (if ok
-        (remhash master texsync--failed)
+        (progn
+          (remhash master texsync--failed)
+          (when entry
+            (puthash master (cons (current-time) (- (float-time) (car entry)))
+                     texsync--last-built)))
       (puthash master (or log t) texsync--failed))
     (force-mode-line-update t)
     (and entry (- (float-time) (car entry)))))
@@ -1212,6 +1231,100 @@ Return the seconds it took, or nil."
   (texsync--status (and (buffer-file-name)
                         (gethash (buffer-file-name) texsync--view-masters))))
 
+;;;; The build log pane
+
+(defvar-local texsync--log-master nil
+  "In a build log buffer: its main file.")
+
+(defvar texsync--log-buffers (make-hash-table :test 'equal)
+  "Main file -> its build log buffer.")
+
+(defun texsync--log-buffer (master)
+  "The build log buffer of MASTER, `*texsync NAME*' (NAME<2> for a second
+main file of the same name), made once."
+  (let ((buf (gethash master texsync--log-buffers)))
+    (unless (buffer-live-p buf)
+      (let* ((name (format "*texsync %s*" (file-name-nondirectory master)))
+             (old (get-buffer name)))
+        ;; a log of this main file from before (or from an older texsync): reuse it
+        (setq buf (if (and old (member (buffer-local-value 'texsync--log-master old)
+                                       (list nil master)))
+                      old
+                    (generate-new-buffer name))))
+      (with-current-buffer buf
+        (setq texsync--log-master master
+              truncate-lines t
+              header-line-format '(:eval (texsync--log-header))))
+      (puthash master buf texsync--log-buffers))
+    buf))
+
+(defun texsync--log-header ()
+  "Header line of a build log: what the build of its main file is doing."
+  (let* ((master texsync--log-master)
+         (name (and master (file-name-nondirectory master)))
+         (run (and master (gethash master texsync--builds)))
+         (last (and master (gethash master texsync--last-built))))
+    (cond
+     ((null master) "")
+     (run
+      (propertize (format " %s %s ... %d s"
+                          (if (cdr run) "Building" "Another program is building")
+                          name (round (- (float-time) (car run))))
+                  'face 'warning))
+     ((gethash master texsync--failed)
+      (propertize (format " Build of %s FAILED: the errors are in the log below" name)
+                  'face 'error))
+     (last
+      (propertize (format " Built %s in %.1f s at %s" name (cdr last)
+                          (format-time-string "%H:%M" (car last)))
+                  'face 'success))
+     (t (format " %s: no build yet" name)))))
+
+(defun texsync--log-filter (proc string)
+  "Append latexmk's output STRING to its log, and keep the log panes at its end."
+  (when (buffer-live-p (process-buffer proc))
+    (with-current-buffer (process-buffer proc)
+      (save-excursion
+        (goto-char (process-mark proc))
+        (insert string)
+        (set-marker (process-mark proc) (point)))
+      (dolist (w (get-buffer-window-list (current-buffer) nil t))
+        (set-window-point w (point-max))))))
+
+(defun texsync--log-append (master text)
+  "Append TEXT to MASTER's build log, keeping its panes at the end."
+  (with-current-buffer (texsync--log-buffer master)
+    (save-excursion (goto-char (point-max)) (insert text))
+    (dolist (w (get-buffer-window-list (current-buffer) nil t))
+      (set-window-point w (point-max)))))
+
+(defun texsync--log-window (pwin master &optional create)
+  "The log pane under the PDF window PWIN, showing MASTER's build log.
+An existing pane (window parameter `texsync-log') is switched to MASTER's
+log; with CREATE, a missing one is made by splitting PWIN, unless
+`texsync-log-height' is nil or PWIN is too low."
+  (let ((w (cl-find-if (lambda (w) (window-parameter w 'texsync-log))
+                       (window-list (window-frame pwin) 'nomini)))
+        (log (texsync--log-buffer master)))
+    (when (and (null w) create texsync-log-height
+               (> (window-total-height pwin) (+ texsync-log-height 10)))
+      (setq w (split-window pwin (- texsync-log-height) 'below))
+      (set-window-parameter w 'texsync-log t)
+      ;; the PDF window got lower: draw its pages at the new size
+      (with-current-buffer (window-buffer pwin)
+        (when (derived-mode-p 'pdf-view-mode)
+          (pdf-view-redisplay pwin))))
+    (when (and w (not (eq (window-buffer w) log)))
+      (set-window-dedicated-p w nil)
+      (set-window-buffer w log)
+      (set-window-point w (with-current-buffer log (point-max))))
+    (when w
+      (set-window-dedicated-p w t)
+      ;; keep its height when other panes change (recorded for the log buffer
+      ;; it shows: preserving applies only while the window shows that buffer)
+      (window-preserve-size w nil t))
+    w))
+
 (defvar texsync--synctex-asked (make-hash-table :test 'equal)
   "PDF -> its modification time when a rebuild for missing SyncTeX data was asked.")
 
@@ -1240,24 +1353,34 @@ the PDF up to date (-g)."
       (user-error "texsync: cannot tell the main file; set `TeX-master'"))
     (if (process-live-p (gethash master texsync--processes))
         (puthash master t texsync--pending)
-      (let ((default-directory (file-name-directory master))
-            (buf (get-buffer-create
-                  (format "*texsync %s*" (file-name-nondirectory master)))))
+      (let* ((default-directory (file-name-directory master))
+             (buf (texsync--log-buffer master))
+             (command (append texsync-latexmk-command
+                              (and force '("-g"))
+                              (list (concat "-outdir=" texsync-output-dir)
+                                    (file-name-nondirectory master)))))
         (make-directory texsync-output-dir t)
         (with-current-buffer buf
-          (let ((inhibit-read-only t)) (erase-buffer)))
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (format "%s $ %s\n" (format-time-string "%H:%M:%S")
+                            (mapconcat #'shell-quote-argument command " ")))))
         (puthash master
                  (make-process
                   :name "texsync-latexmk"
                   :buffer buf
                   :noquery t
-                  :command (append texsync-latexmk-command
-                                   (and force '("-g"))
-                                   (list (concat "-outdir=" texsync-output-dir)
-                                         (file-name-nondirectory master)))
+                  :command command
+                  :filter #'texsync--log-filter
                   :sentinel (lambda (proc _event) (texsync--compiled master proc)))
                  texsync--processes)
-        (texsync--build-started master t)))))
+        (with-current-buffer buf
+          (set-marker (process-mark (gethash master texsync--processes)) (point-max)))
+        (texsync--build-started master t)
+        ;; the log pane under the PDF, when the PDF is shown
+        (when-let* ((pbuf (find-buffer-visiting (texsync--pdf-file master)))
+                    (pwin (get-buffer-window pbuf)))
+          (texsync--log-window pwin master t))))))
 
 (defun texsync--compiled (master proc)
   "Handle the end of latexmk run PROC on MASTER."
@@ -1265,6 +1388,10 @@ the PDF up to date (-g)."
     (remhash master texsync--processes)
     (let* ((ok (and (eq (process-status proc) 'exit) (zerop (process-exit-status proc))))
            (secs (texsync--build-ended master ok (process-buffer proc))))
+      (texsync--log-append
+       master (format "\n%s --- %s%s ---\n" (format-time-string "%H:%M:%S")
+                      (if ok "built" (format "FAILED (exit %s)" (process-exit-status proc)))
+                      (if secs (format " in %.1f s" secs) "")))
       (if ok
           (progn
             (texsync--reload master)

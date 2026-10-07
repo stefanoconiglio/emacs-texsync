@@ -319,6 +319,26 @@ and rebuilt at every pause in typing, far more often than wanted). When it is a 
 buffer, and saving compiles (`texsync-compile-on-save`). By default only an explicit save
 compiles.
 
+**The build log pane.** Under the PDF window, a pane `texsync-log-height` lines tall (6; nil:
+none) shows the build log of the PDF's main file, `*texsync NAME*` (one buffer per main file,
+`texsync--log-buffers`; a second `main.tex` gets `<2>`). texsync's runs write latexmk's output
+there through `texsync--log-filter`, which also moves every pane showing it to the end, so the
+output scrolls past while pdflatex works; the command and its start time head the log, and
+`--- built in N s ---` or `--- FAILED (exit N) ---` ends it. The log's header line says what the
+build is doing: `Building NAME ... 12 s` (warning face; `Another program is building` for a run
+seen by the poll), `Built NAME in 6.2 s at 23:10` (success face, from `texsync--last-built`),
+`Build of NAME FAILED: the errors are in the log below` (error face), or `no build yet`; the
+1 s ticker of the mode-line status redraws it. The pane is made (`texsync--log-window`) when the
+PDF is shown on request (`texsync-view`, `C-c C-v`) and when a texsync build starts while the
+PDF is shown, by splitting the PDF window below (only if it has more than height + 10 lines);
+an existing pane, found by its window parameter `texsync-log`, is reused and switched to the
+log of the main file shown. It is dedicated (nothing else is displayed in it) and keeps its
+height when the frame changes (`window-preserve-size`); after the split the PDF is redrawn at
+its new size. It stays between builds, so the PDF window does not change size at each build
+(a pane that came and went would make pdf-roll redraw and move the sync anchor). The window
+chosen for a PDF is never the pane. Builds by other programs write no log here: the header
+says that they run.
+
 **Build status in the mode lines.** While a build runs, the source's lighter reads
 `Sync Building 12s` and the PDF's (`texsync-pdf-mode`, which had none) ` Building 12s`, in the
 `warning` face, counting the seconds since the build started: a large document (a 577-page course
@@ -365,7 +385,7 @@ busy file exists; a failure of another program's build is not detected.
 
 ## Tests
 
-- `make test`: 21 ERT tests, headless (about 20 s; they compile the fixtures with latexmk, and
+- `make test`: 22 ERT tests, headless (about 20 s; they compile the fixtures with latexmk, and
   keep the copies in a temporary `texsync-view-directory`).
   - The copy shown: after a build the copy and its SyncTeX file exist outside the document's
     folder, map back to the main file and answer a forward search; a half-written latexmk PDF,
@@ -401,7 +421,13 @@ busy file exists; a failure of another program's build is not detected.
   - Build status: during a build of the article both lighters read `Building Ns`, after it
     nothing; with an undefined control sequence `Build failed`, which stays, with the log buffer
     kept; fixed, the next build clears it; a fresh `.synctex(busy)` makes the poll show another
-    program's build, its removal clears it, and one 5 minutes old is ignored.
+    program's build, its removal clears it, and one 5 minutes old is ignored; the log header
+    says FAILED after the failed build.
+  - Log pane: under a window standing in for the PDF, one pane of `texsync-log-height` lines,
+    dedicated, showing the main file's log, not made twice; header `no build yet`, then
+    `Building main.tex ... N s` during a build, `Built main.tex in N s at HH:MM` after; the log
+    holds the command, latexmk's output and `--- built in N s ---`, and the pane is at its end;
+    another `main.tex` gets a log of its own.
 - `make gui-test`: 32 checks in a graphical `emacs -Q`, fullscreen, keys and mouse events sent
   through `execute-kbd-macro` so that the command loop, `post-command-hook` and timers run as
   for a user. **It takes over the screen for about a minute: run it when the machine is free.**

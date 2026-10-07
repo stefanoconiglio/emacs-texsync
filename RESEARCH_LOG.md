@@ -511,3 +511,17 @@ on screen; no build of the user's documents was started for it.
 
 **Limits.** Another program's latexmk can drop the indicator for a moment between pdflatex
 passes; its failures are not detected.
+
+## 2026-10-06 23:10 CEST — A build log pane under the PDF
+
+**Request (user).** The mode-line counter was not noticed. Wanted: a small pane under the PDF
+showing the compilation status, or pdflatex's output scrolling, to see that a build is running.
+
+**Design.** Both: the pane shows latexmk's output as it arrives (process filter, pane kept at the
+end), and its header line gives the status and the elapsed time. The pane stays between builds
+(made with the PDF, or at the first build while the PDF is shown) rather than appearing for each
+build: a pane that comes and goes changes the PDF window's height, which makes pdf-roll redraw
+and shifts the sync anchor. Builds by other programs leave no output here; the header says they
+run (from the poll's `.synctex(busy)` check).
+
+**Results.** `make test` 22 / 22 (1 new, 1 extended). Not seen on screen yet.

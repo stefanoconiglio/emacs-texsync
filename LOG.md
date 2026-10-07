@@ -71,3 +71,15 @@ RESEARCH_LOG.md; how the code works, in DESIGN.md.
   `texsync--pdf-lighter`, a 1 s ticker while a build runs; `texsync--poll-master` sees other
   programs' builds through `.synctex(busy)` (stale after 2 min).
 - Test `texsync-test-build-status` (21 tests). DESIGN.md (Compiling, Tests) and README.
+
+## 2026-10-06 (late night)
+
+- Build log pane under the PDF (`texsync-log-height`, 6 lines; nil: none): latexmk's output
+  arrives there and scrolls (`texsync--log-filter`), with the command at the top and the result
+  at the bottom; its header line says Building / Another program is building / Built in N s at
+  HH:MM / FAILED (`texsync--log-header`). Made by `texsync-view` and when a build starts with
+  the PDF shown (`texsync--log-window`), reused afterwards, dedicated, fixed height. One log
+  buffer per main file (`texsync--log-buffers`). `texsync--last-built` keeps the last good
+  build's time and duration. The window chosen for a PDF is never the pane.
+- Test `texsync-test-log-pane`; the build-status test also checks the FAILED header (22 tests).
+  DESIGN.md (Compiling, Tests), README.
