@@ -77,6 +77,11 @@ While the PDF is being built, both mode lines also say **Building 12s** (countin
 failed build they say **Build failed** until the next good one (click it for the build log). Builds
 started by another program (VS Code, a terminal) show too, once texsync sees pdflatex running.
 
+The PDF's size: texsync fits a slide to its pane (`P` in the PDF) and a paper's page to the
+pane's width (`W`). `+` and `-` zoom to a fixed size, which stays when the pane is resized
+later, so a slide can end up larger than its pane; `P` or `W` fits it again. `0` shows the
+page at 100%, not fitted.
+
 Two ways to stop it:
 
 - **`M-x texsync-toggle-follow`** pauses the following, both ways, for the whole document (all
@@ -87,6 +92,22 @@ Two ways to stop it:
 - **`M-x texsync-mode`** turns texsync off in that buffer altogether: no following, no
   compiling on save, and AUCTeX's View goes back to your usual viewer.
 
+## A book: lectures built one by one, shown glued (off by default)
+
+A book, a main file whose body includes whole documents (a course file with `\input`s of
+lectures through the docmute package, for example), is built and shown as one document, like
+any other. With `(setq texsync-glue t)`, texsync instead builds each lecture on its own and
+shows them glued into one PDF:
+
+- saving a lecture rebuilds only that lecture (a few seconds instead of the whole course);
+- the glued PDF syncs both ways, ctrl+click included, through each lecture's own SyncTeX data;
+- it is a preview: page numbers are each lecture's own, the pages the course file adds
+  (`\part` pages) are absent, and the section list (`o` in the PDF) is empty;
+- `M-x texsync-compile-whole` builds the real course, as one document, into `build/` (to hand
+  out).
+
+Needs `qpdf`.
+
 ## Options
 
 `M-x customize-group RET texsync`:
@@ -95,6 +116,7 @@ Two ways to stop it:
 - `texsync-view-directory` (`~/.cache/texsync`): where the copies of the PDFs shown live, one
   folder per document, deleted when its PDF buffer is killed or Emacs exits (and, if left by a
   crash, after 7 days unused).
+- `texsync-glue` (nil): t builds a book lecture by lecture and shows the lectures glued.
 - `texsync-log-height` (6): lines of the build log pane under the PDF; nil: no pane.
 - `texsync-compile-idle-delay` (nil: compile only when you save; a number of seconds: also after
   that long without typing, saving the file first).
@@ -106,7 +128,7 @@ Two ways to stop it:
   position.
 
 Commands: `texsync-view`, `texsync-sync`, `texsync-compile` (with `C-u`, a forced rebuild),
-`texsync-toggle-follow`.
+`texsync-compile-whole` (a book as one document), `texsync-toggle-follow`.
 
 A PDF built by something else without `-synctex=1` (a plain `pdflatex` run, a Makefile) cannot
 be synced: texsync says so in the echo area and rebuilds it once with latexmk. If you also build

@@ -79,6 +79,18 @@ document's folder, so that a synced folder does not upload the copies."
 `-outdir=' with `texsync-output-dir' and the main file are appended."
   :type '(repeat string))
 
+(defcustom texsync-glue nil
+  "Non-nil: build a book part by part and show the parts' PDFs glued.
+A book is a main file whose body includes two or more files that are
+whole documents themselves (each with its own \\begin{document}, as with
+the docmute package).  Saving one of them builds only that part, and the
+PDF shown is the parts' PDFs glued together (qpdf), a preview: page
+numbers are each part's own, and what the book file adds around the
+parts is not there.  `texsync-compile-whole' builds the real book.
+nil (the default): a book is built and shown as one document, like any
+other."
+  :type 'boolean)
+
 (defcustom texsync-log-height 6
   "Lines of the build log pane under the PDF, or nil for no pane.
 The pane shows latexmk's output as it comes, under a line that says
@@ -308,6 +320,17 @@ Its class is beamer, or (class set elsewhere) Beamer wrote a .nav file."
                                        (texsync--outdir master)))))
 
 (defun texsync--nav-ranges (master)
+  "Page ranges (FIRST . LAST) of the frames of MASTER.
+A book's are its parts', shifted to the glued pages."
+  (if-let* ((parts (texsync--book-parts master)))
+      (cl-loop for part in parts
+               for off = (texsync--book-offset master part)
+               when off
+               append (mapcar (lambda (r) (cons (+ off (car r)) (+ off (cdr r))))
+                              (texsync--single-nav-ranges part)))
+    (texsync--single-nav-ranges master)))
+
+(defun texsync--single-nav-ranges (master)
   "Page ranges (FIRST . LAST) of the frames of MASTER, from its .nav file.
 The copy made with the PDF shown, when there is one: the .nav in the
 output directory may belong to a build still being written."
@@ -402,7 +425,22 @@ Search backwards when BACKWARD is non-nil.  Point ends at the match start."
         (puthash key (funcall fn) (cdr entry))))))
 
 (defun texsync--forward (file line pdf)
-  "SyncTeX forward search for LINE of FILE in PDF, or nil."
+  "SyncTeX forward search for LINE of FILE in PDF, or nil.
+In a book's glued PDF: in the part FILE is (or that includes it), its
+page shifted to the glued pages."
+  (if-let* ((book (texsync--book-of-view pdf)))
+      (let* ((parts (texsync--book-parts book))
+             (order (if (member file parts) (cons file (remove file parts)) parts)))
+        (cl-loop for part in order
+                 for r = (texsync--single-forward file line (texsync--pdf-file part))
+                 for off = (texsync--book-offset book part)
+                 when (and r off)
+                 return (cons (cons 'page (+ off (alist-get 'page r)))
+                              (assq-delete-all 'page (copy-sequence r)))))
+    (texsync--single-forward file line pdf)))
+
+(defun texsync--single-forward (file line pdf)
+  "SyncTeX forward search for LINE of FILE in PDF (one document), or nil."
   (texsync--memoized
    pdf (list 'fwd file line)
    (lambda ()
@@ -462,6 +500,14 @@ document, the frame typeset on PAGE.  nil for other files."
         (cons master line)))))
 
 (defun texsync--backward (pdf page x y)
+  "The source of point (X, Y) of PAGE in PDF, as (FILE LINE . FROM-AUX), or nil.
+In a book's glued PDF: in the part on PAGE, at its own page."
+  (if-let* ((book (texsync--book-of-view pdf))
+            (at (texsync--book-part-at book page)))
+      (texsync--single-backward (texsync--pdf-file (car at)) (cdr at) x y)
+    (texsync--single-backward pdf page x y)))
+
+(defun texsync--single-backward (pdf page x y)
   "The source of point (X, Y) of PAGE in PDF, as (FILE LINE . FROM-AUX), or nil.
 X and Y are fractions of the page.  An answer in a file LaTeX wrote is
 sent to its source (`texsync--aux-source'), and FROM-AUX is then t."
@@ -581,6 +627,13 @@ The PDF ends like a finished one, and no SyncTeX file is being written
          (texsync--complete-pdf-p pdf))))
 
 (defun texsync--refresh-view (master)
+  "Make the PDF texsync shows for MASTER current; non-nil if it changed.
+A book (`texsync--book-parts') is glued from its parts' copies."
+  (if-let* ((parts (texsync--book-parts master)))
+      (texsync--refresh-book master parts)
+    (texsync--refresh-single-view master)))
+
+(defun texsync--refresh-single-view (master)
   "Copy MASTER's finished build to the PDF texsync shows; non-nil if it changed.
 Nothing happens while the build is being written, or when the copy is the
 latest build already.  The SyncTeX file goes along when the same run wrote
@@ -705,6 +758,12 @@ With CREATE, show PBUF in the window to the right, splitting if needed."
                      (setq r (window-in-direction 'above r)))
                    (or r (split-window-right)))))
           (set-window-buffer w pbuf)
+          ;; pdf-tools files the overlay a window draws its pages in under
+          ;; the window selected when it first meets the window
+          ;; (vedang/pdf-tools#349).  Met from the source window (the log
+          ;; pane redraws the PDF), it goes to another entry: pages then
+          ;; change but are never drawn, and the PDF looks frozen.
+          (with-selected-window w (image-mode-winprops w))
           w))))
 
 (defvar texsync-pdf-mode-map
@@ -714,10 +773,39 @@ With CREATE, show PBUF in the window to the right, splitting if needed."
     ;; click), so pdf-sync's jump bound to the release never runs.
     (define-key map [C-down-mouse-1] #'ignore)
     (define-key map [double-down-mouse-1] #'ignore)
-    (define-key map [C-mouse-1] #'pdf-sync-backward-search-mouse)
-    (define-key map [double-mouse-1] #'pdf-sync-backward-search-mouse)
+    (define-key map [C-mouse-1] #'texsync-pdf-click)
+    (define-key map [double-mouse-1] #'texsync-pdf-click)
     map)
   "Keys of `texsync-pdf-mode'.")
+
+(defun texsync-pdf-click (ev)
+  "Go to the source of the place clicked in the PDF (ctrl+click, double-click).
+pdf-sync's backward search, except in a book's glued PDF, which has no
+SyncTeX data of its own: there the clicked page is looked up in its part."
+  (interactive "@e")
+  (if (not (texsync--book-of-view (buffer-file-name)))
+      (pdf-sync-backward-search-mouse ev)
+    (let* ((posn (event-start ev))
+           (xy (posn-object-x-y posn))
+           (page (if (bound-and-true-p pdf-view-roll-minor-mode)
+                     (/ (+ (posn-point posn) 3) 4)
+                   (pdf-view-current-page)))
+           (size (and (posn-image posn) (pdf-view-image-size t nil page)))
+           (src (and size
+                     (texsync--backward (buffer-file-name) page
+                                        (/ (car xy) (float (car size)))
+                                        (/ (cdr xy) (float (cdr size)))))))
+      (cond
+       ((null size) (user-error "Outside of image area"))
+       ((null src) (message "texsync: no source found for this place"))
+       (t
+        (pop-to-buffer (or (find-buffer-visiting (car src)) (find-file-noselect (car src)))
+                       (bound-and-true-p pdf-sync-backward-display-action))
+        (unless (bound-and-true-p texsync-mode) (texsync-mode 1))
+        (push-mark)
+        (goto-char (point-min))
+        (forward-line (1- (cadr src)))
+        (run-hooks 'pdf-sync-backward-hook))))))
 
 (define-minor-mode texsync-pdf-mode
   "In a PDF shown by texsync, ctrl+click or double-click jumps to the source.
@@ -844,7 +932,12 @@ With DISPLAY (interactively), open and show the PDF if it is not shown."
                                 (lambda () (texsync--show-page pwin page)))))
            (t
             (when-let* ((target (texsync-paper-target pdf))
-                        (frac (texsync--point-fraction)))
+                        ;; the same pixel row as point, as a fraction of the PDF
+                        ;; window (lower than the source's when the log pane is
+                        ;; under it)
+                        (frac (let ((f (texsync--point-fraction)))
+                                (and f (min 1.0 (/ (* f (window-body-height nil t))
+                                                   (float (window-body-height pwin t))))))))
               (texsync--place pwin (list (car target) (cdr target) frac)
                               (lambda ()
                                 (texsync--show-position
@@ -880,7 +973,8 @@ With DISPLAY (interactively), open and show the PDF if it is not shown."
   (setq texsync--timer (run-with-timer texsync-sync-delay nil fn win)))
 
 (defconst texsync--jump-commands
-  '(pdf-sync-backward-search-mouse ignore pdf-util-image-map-mouse-event-proxy nil)
+  '(pdf-sync-backward-search-mouse texsync-pdf-click ignore
+    pdf-util-image-map-mouse-event-proxy nil)
   "Commands in the PDF that must not make the source follow it.
 The proxy re-sends clicks on text (an image-map area) without the area;
 nil is an undefined key.")
@@ -979,7 +1073,10 @@ once per call; answers are remembered until the PDF changes."
                 (unless structural (setq structural (list file line page yy))))
                (t
                 (push src seen)
-                (let* ((fw (texsync--forward file line pdf))
+                (let* ((fw (let ((r (texsync--forward file line pdf)))
+                             ;; an empty or page-sized box is no place for the
+                             ;; line (page-break glue at the foot of a page)
+                             (and r (texsync--good-box-p (alist-get 'edges r)) r)))
                        (p2 (and fw (alist-get 'page fw)))
                        (y2 (and fw (nth 1 (alist-get 'edges fw)))))
                   (cond ((and fw (eql p2 page) (<= y2 (+ yy 0.05)))
@@ -1047,8 +1144,11 @@ at `texsync-pdf-anchor' of the window, put at the same height."
             (when file
               ;; Put the line where its text starts in the PDF window, not at
               ;; the anchor, so that both sit at the same height.
+              ;; the same pixel row as the text in the PDF, as a fraction of
+              ;; the source window (the PDF window may be lower: log pane)
               (let ((frac (/ (texsync--pdf-px pwin p2 y2)
-                             (float (window-body-height pwin t)))))
+                             (float (window-body-height swin t)))))
+
                 (texsync--show-source swin file line (min 0.95 (max 0.0 frac))))))))))))
 
 (defun texsync--sync-from-pdf (pwin)
@@ -1146,6 +1246,136 @@ Called by pdf-sync in the PDF window."
           (forward-line (1- (car fb))))))))
 
 ;;;; Compiling
+
+;;;; Books: built part by part, shown glued
+
+;; A book's parts are whole documents included by its body (with docmute):
+;; each is built alone into the output directory, copied like any PDF texsync
+;; shows (`texsync--refresh-single-view'), and the copies are glued with qpdf
+;; into the PDF shown for the book.  A sidecar file next to it records where
+;; each part starts; lookups go to the part's own SyncTeX data and shift pages.
+
+(defconst texsync--part-command-re
+  "\\\\[A-Za-z@]+\\*?[ \t]*{[ \t]*\\([^{}%\n]+?\\)[ \t]*}"
+  "A command with one braced argument, which may name a part of a book.")
+
+(defun texsync--standalone-p (file)
+  "Non-nil when FILE is a whole document: it has a \\begin{document}."
+  (texsync--cached
+   'standalone file
+   (lambda (f)
+     (with-temp-buffer
+       (insert-file-contents f)
+       (goto-char (point-min))
+       (and (re-search-forward texsync--begin-document-re nil t) t)))))
+
+(defun texsync--book-parts (master)
+  "The parts of MASTER when it is a book, in order, else nil.
+Parts are the files named in a command argument in MASTER's body that are
+whole documents; at least two make a book.  nil when `texsync-glue' is nil."
+  (when (and texsync-glue master (file-readable-p master))
+    (let ((parts
+           (texsync--cached
+            'book master
+            (lambda (f)
+              (with-temp-buffer
+                (insert-file-contents f)
+                (goto-char (point-min))
+                (let ((dir (file-name-directory f)) parts)
+                  (when (texsync--code-search texsync--begin-document-re nil)
+                    (forward-line 1)
+                    (while (and (texsync--code-search texsync--part-command-re nil)
+                                (looking-at texsync--part-command-re))
+                      ;; the end first: texsync--standalone-p searches too
+                      (let ((file (texsync--tex-file (match-string 1) dir))
+                            (end (match-end 0)))
+                        (when (and (file-readable-p file)
+                                   (not (file-equal-p file f))
+                                   (not (member file parts))
+                                   (texsync--standalone-p file))
+                          (push file parts))
+                        (goto-char end))))
+                  (nreverse parts)))))))
+      (when (cdr parts)
+        ;; the parts' copies map back to the parts (lookups, .vrb redirects)
+        (mapc #'texsync--pdf-file parts)
+        parts))))
+
+(defun texsync--book-of-view (pdf)
+  "The book whose glued PDF is PDF, or nil."
+  (let ((master (gethash pdf texsync--view-masters)))
+    (and master (texsync--book-parts master) master)))
+
+(defun texsync--layout-file (book)
+  "The sidecar of BOOK's glued PDF: its parts and where each starts."
+  (concat (file-name-sans-extension (texsync--pdf-file book)) ".parts"))
+
+(defun texsync--book-layout (book)
+  "BOOK's layout: a list of (PART FIRST-PAGE PAGES COPY-MTIME), or nil.
+Read from the sidecar written with the glued PDF."
+  (let ((f (texsync--layout-file book)))
+    (when (file-readable-p f)
+      (texsync--cached
+       'layout f
+       (lambda (file)
+         (ignore-errors
+           (with-temp-buffer
+             (insert-file-contents file)
+             (read (current-buffer)))))))))
+
+(defun texsync--pdf-pages (pdf)
+  "Number of pages of PDF (qpdf), or nil."
+  (with-temp-buffer
+    (and (eql 0 (call-process "qpdf" nil t nil "--show-npages" pdf))
+         (string-to-number (buffer-string)))))
+
+(defun texsync--refresh-book (book parts)
+  "Glue the copies of BOOK's PARTS into the PDF shown for BOOK.
+Non-nil if it changed.
+Each part's finished build is copied first.  Nothing happens while a part
+has no copy yet, or when the glued PDF is up to date with the copies."
+  (mapc #'texsync--refresh-single-view parts)
+  (let* ((copies (mapcar #'texsync--pdf-file parts))
+         (view (texsync--pdf-file book))
+         (layout (texsync--book-layout book)))
+    (when (and (cl-every #'file-exists-p copies)
+               (executable-find "qpdf")
+               (not (and (file-exists-p view)
+                         (equal (mapcar #'car layout) parts)
+                         (cl-every (lambda (l c) (equal (nth 3 l) (texsync--mtime c)))
+                                   layout copies))))
+      (make-directory (file-name-directory view) t)
+      (let* ((tmp (make-temp-file (expand-file-name ".glue-" (file-name-directory view)) nil ".pdf"))
+             (side (concat tmp ".parts"))
+             (first 1)
+             (new-layout
+              (cl-loop for part in parts
+                       for copy in copies
+                       for n = (texsync--pdf-pages copy)
+                       collect (list part first n (texsync--mtime copy))
+                       do (setq first (+ first (or n 0)))))
+             (ok (and (cl-every #'caddr new-layout)
+                      ;; qpdf exits 3 when it only warns: --warning-exit-0
+                      (eql 0 (apply #'call-process "qpdf" nil nil nil
+                                    "--warning-exit-0" "--empty" "--pages"
+                                    (append copies (list "--" tmp)))))))
+        (if (not ok)
+            (progn (ignore-errors (delete-file tmp)) nil)
+          (with-temp-file side (prin1 new-layout (current-buffer)))
+          (rename-file side (texsync--layout-file book) t)
+          (rename-file tmp view t)
+          t)))))
+
+(defun texsync--book-part-at (book page)
+  "The part of BOOK on glued PAGE, as (PART . LOCAL-PAGE), or nil."
+  (cl-loop for (part first n) in (texsync--book-layout book)
+           when (and n (<= first page (+ first n -1)))
+           return (cons part (1+ (- page first)))))
+
+(defun texsync--book-offset (book part)
+  "Pages of BOOK before PART."
+  (let ((l (assoc part (texsync--book-layout book))))
+    (and l (1- (nth 1 l)))))
 
 ;;;; Build status in the mode lines
 
@@ -1333,6 +1563,18 @@ log; with CREATE, a missing one is made by splitting PWIN, unless
 A PDF built by something else (a plain pdflatex run, a Makefile) has no
 .synctex.gz, and every lookup would fail quietly.  The rebuild is forced:
 latexmk may hold the PDF up to date."
+  (if-let* ((parts (texsync--book-parts master)))
+      ;; a glued PDF has no SyncTeX file: its parts' copies do
+      (let ((missing (cl-remove-if (lambda (p) (texsync--synctex-file (texsync--pdf-file p)))
+                                   parts)))
+        (when (and missing (not (process-live-p (gethash master texsync--processes))))
+          (let ((key (concat pdf "#parts")))
+            (unless (equal (gethash key texsync--synctex-asked) (texsync--mtime pdf))
+              (puthash key (texsync--mtime pdf) texsync--synctex-asked)
+              (message "texsync: some parts of %s have no SyncTeX data; rebuilding them"
+                       (file-name-nondirectory master))
+              (texsync--compile-book master t missing))))
+        (null missing))
   (or (texsync--synctex-file pdf)
       (let ((mtime (file-attribute-modification-time (file-attributes pdf))))
         (unless (equal (gethash pdf texsync--synctex-asked) mtime)
@@ -1340,17 +1582,50 @@ latexmk may hold the PDF up to date."
           (message "texsync: %s has no SyncTeX data (built without -synctex=1?); rebuilding it"
                    (file-name-nondirectory pdf))
           (texsync-compile master t))
-        nil)))
+        nil))))
 
-(defun texsync-compile (&optional master force)
+(defun texsync-compile (&optional master force file)
   "Compile MASTER (default: this buffer's main file) with latexmk, asynchronously.
 A request while a compile runs queues one more run after it.  With FORCE
 \(interactively, a prefix argument), latexmk rebuilds even when it holds
-the PDF up to date (-g)."
+the PDF up to date (-g).  A book (`texsync-glue') is built part by part:
+only FILE's part when FILE (default: this buffer's file) is one, else
+every part (latexmk skips those that are up to date)."
   (interactive (list nil current-prefix-arg))
-  (let ((master (or master (texsync-master-file))))
+  (let* ((master (or master (texsync-master-file)))
+         (file (or file (buffer-file-name)))
+         (parts (texsync--book-parts master)))
     (unless master
       (user-error "texsync: cannot tell the main file; set `TeX-master'"))
+    (if parts
+        (texsync--compile-book
+         master force
+         (if (member file parts)
+             ;; FILE's part, and any part never built (the glue needs them all)
+             (cons file (cl-remove-if (lambda (p) (or (equal p file)
+                                                      (file-exists-p (texsync--built-pdf p))))
+                                      parts))
+           parts))
+      (texsync--compile-single master force))))
+
+(defun texsync-compile-whole ()
+  "Build the whole book of this buffer, as one document (not glued).
+The PDF is latexmk's, in the output directory, to hand out: its page
+numbers and the pages the book file adds are the real ones.  The PDF
+shown stays the glued one."
+  (interactive)
+  (let ((master (or (texsync-master-file)
+                    (user-error "texsync: cannot tell the main file; set `TeX-master'"))))
+    (if (process-live-p (gethash master texsync--processes))
+        (user-error "texsync: a build of %s is running; try again when it ends"
+                    (file-name-nondirectory master))
+      (texsync--compile-single master nil)
+      (message "texsync: building the whole of %s into %s"
+               (file-name-nondirectory master) (texsync--built-pdf master)))))
+
+(defun texsync--compile-single (master force)
+  "Compile MASTER with latexmk as one document; see `texsync-compile'."
+  (progn
     (if (process-live-p (gethash master texsync--processes))
         (puthash master t texsync--pending)
       (let* ((default-directory (file-name-directory master))
@@ -1381,6 +1656,90 @@ the PDF up to date (-g)."
         (when-let* ((pbuf (find-buffer-visiting (texsync--pdf-file master)))
                     (pwin (get-buffer-window pbuf)))
           (texsync--log-window pwin master t))))))
+
+(defvar texsync--book-pending (make-hash-table :test 'equal)
+  "Book -> parts asked for while a build of the book was running.")
+
+(defun texsync--part-busy-p (part)
+  "Non-nil when another program is building PART now (a fresh .synctex(busy))."
+  (let ((mt (texsync--mtime (concat (file-name-sans-extension (texsync--built-pdf part))
+                                    ".synctex(busy)"))))
+    (and mt (< (float-time (time-since mt)) 120))))
+
+(defun texsync--compile-book (book force parts)
+  "Build PARTS of BOOK one after another, then show them glued.
+The output of every part goes to BOOK's build log.  A request while the
+book builds is kept and built after it."
+  (if (process-live-p (gethash book texsync--processes))
+      (puthash book (cl-union parts (gethash book texsync--book-pending) :test #'equal)
+               texsync--book-pending)
+    (with-current-buffer (texsync--log-buffer book)
+      (let ((inhibit-read-only t)) (erase-buffer)))
+    (texsync--build-started book t)
+    (when-let* ((pbuf (find-buffer-visiting (texsync--pdf-file book)))
+                (pwin (get-buffer-window pbuf)))
+      (texsync--log-window pwin book t))
+    (texsync--book-step book force parts)))
+
+(defun texsync--book-step (book force queue)
+  "Build the first part of QUEUE, then the rest; at the end, show BOOK."
+  (cond
+   ((null queue) (texsync--book-done book t))
+   ((texsync--part-busy-p (car queue))
+    ;; another program is writing this part's files: wait for it
+    (texsync--log-append book (format "%s %s is being built by another program; waiting\n"
+                                      (format-time-string "%H:%M:%S")
+                                      (file-name-nondirectory (car queue))))
+    (run-with-timer 2 nil #'texsync--book-step book force queue))
+   (t
+    (let* ((part (car queue))
+           (default-directory (file-name-directory part))
+           (log (texsync--log-buffer book))
+           (command (append texsync-latexmk-command
+                            (and force '("-g"))
+                            (list (concat "-outdir=" texsync-output-dir)
+                                  (file-name-nondirectory part)))))
+      (make-directory texsync-output-dir t)
+      (texsync--log-append book (format "%s $ %s\n" (format-time-string "%H:%M:%S")
+                                        (mapconcat #'shell-quote-argument command " ")))
+      (let ((proc (make-process
+                   :name "texsync-latexmk"
+                   :buffer log
+                   :noquery t
+                   :command command
+                   :filter #'texsync--log-filter
+                   :sentinel
+                   (lambda (proc _event)
+                     (when (memq (process-status proc) '(exit signal))
+                       (if (and (eq (process-status proc) 'exit)
+                                (zerop (process-exit-status proc)))
+                           (texsync--book-step book force (cdr queue))
+                         (texsync--log-append
+                          book (format "%s %s FAILED (exit %s)\n" (format-time-string "%H:%M:%S")
+                                       (file-name-nondirectory part) (process-exit-status proc)))
+                         (texsync--book-done book nil)))))))
+        (with-current-buffer log (set-marker (process-mark proc) (point-max)))
+        (puthash book proc texsync--processes))))))
+
+(defun texsync--book-done (book ok)
+  "End of a build of BOOK's parts: glue and show them if OK.
+Then build what was asked for meanwhile."
+  (remhash book texsync--processes)
+  (let ((secs (texsync--build-ended book ok (texsync--log-buffer book))))
+    (texsync--log-append
+     book (format "\n%s --- %s%s ---\n" (format-time-string "%H:%M:%S")
+                  (if ok "built and glued" "FAILED")
+                  (if secs (format " in %.1f s" secs) "")))
+    (if ok
+        (progn
+          (texsync--reload book)
+          (message "texsync: built %s%s" (file-name-nondirectory book)
+                   (if secs (format " in %.1f s" secs) "")))
+      (message "texsync: %s did not compile; see buffer %s"
+               (file-name-nondirectory book) (buffer-name (texsync--log-buffer book)))))
+  (when-let* ((more (gethash book texsync--book-pending)))
+    (remhash book texsync--book-pending)
+    (texsync--compile-book book nil more)))
 
 (defun texsync--compiled (master proc)
   "Handle the end of latexmk run PROC on MASTER."
@@ -1460,15 +1819,16 @@ source that asked for it)."
 Settled: the built PDF has the size and time it had at the previous poll
 \(latexmk reruns pdflatex at once), it is finished, and no texsync run is
 going on (its sentinel shows its own builds)."
-  (let ((stamp (texsync--file-stamp (texsync--built-pdf master)))
-        (own (process-live-p (gethash master texsync--processes))))
-    ;; another program building: pdflatex writes NAME.synctex(busy) while it runs
+  (let* ((parts (texsync--book-parts master))
+         ;; a book: its parts' builds
+         (stamp (let ((stamps (mapcar (lambda (m) (texsync--file-stamp (texsync--built-pdf m)))
+                                      (or parts (list master)))))
+                  (and (cl-every #'identity stamps) stamps)))
+         (own (process-live-p (gethash master texsync--processes))))
+    ;; another program building: pdflatex writes NAME.synctex(busy) while it
+    ;; runs (a run that died leaves it behind: stale after 2 min)
     (unless own
-      (let ((busy (let ((mt (texsync--mtime (concat (file-name-sans-extension
-                                                      (texsync--built-pdf master))
-                                                     ".synctex(busy)"))))
-                    ;; a run that died leaves the file behind: stale after 2 min
-                    (and mt (< (float-time (time-since mt)) 120))))
+      (let ((busy (cl-some #'texsync--part-busy-p (or parts (list master))))
             (entry (gethash master texsync--builds)))
         (cond ((and busy (not entry)) (texsync--build-started master nil))
               ((and (not busy) entry (not (cdr entry)))
@@ -1537,7 +1897,7 @@ going on (its sentinel shows its own builds)."
     (with-current-buffer buf
       (if (texsync--auctex-process)
           (run-with-timer 1 nil #'texsync--compile-after-auctex buf)
-        (texsync-compile)))))
+        (texsync-compile nil nil (buffer-file-name))))))
 
 ;;;; Mode
 

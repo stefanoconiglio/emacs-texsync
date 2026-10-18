@@ -1,0 +1,11 @@
+% A book: two whole decks glued (texsync-glue), as a course file includes its lectures.
+\documentclass{beamer}
+\usepackage{docmute}
+\newcommand{\deck}[1]{\input{#1}}
+
+\begin{document}
+
+\deck{d1}
+\deck{d2}
+
+\end{document}

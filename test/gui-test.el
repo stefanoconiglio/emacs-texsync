@@ -74,7 +74,9 @@ from the window manager) is pending, and then skips redisplay."
   "Error lines in *Messages* since the last clear."
   (with-current-buffer (messages-buffer)
     (cl-remove-if-not
-     (lambda (l) (string-match-p "error\\|Error\\|texsync:" l))
+     (lambda (l) (and (string-match-p "error\\|Error\\|texsync:" l)
+                      ;; texsync's own news, not errors
+                      (not (string-match-p "\\`texsync: built " l))))
      (split-string (buffer-string) "\n" t))))
 
 (defun gui-test--pdf-page (pbuf)
@@ -233,6 +235,31 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
       (gui-test--check "deck: the PDF stays on that slide"
                        (= (gui-test--pdf-page (find-buffer-visiting pdf)) 2)
                        (gui-test--pdf-page (find-buffer-visiting pdf))))
+    ;; C-x 1, then View: a new PDF window.  pdf-tools first met it from the
+    ;; source window (the log pane redraws it) and drew its pages in an overlay
+    ;; of no window: the page number changed, the slide shown did not
+    ;; (vedang/pdf-tools#349).
+    (select-window (get-buffer-window (find-buffer-visiting master)))
+    (gui-test--keys "C-x 1")
+    (gui-test--keys "M-x texsync-view RET")
+    (gui-test--wait 1)
+    (let* ((pbuf (find-buffer-visiting pdf))
+           (w (get-buffer-window pbuf))
+           (shown (lambda ()
+                    (with-current-buffer pbuf
+                      (let ((o (cl-find-if (lambda (o) (eq (overlay-get o 'window) w))
+                                           (overlays-in (point-min) (point-max)))))
+                        (and o (overlay-get o 'display))))))
+           (before (funcall shown))
+           (page (gui-test--pdf-page pbuf)))
+      (execute-kbd-macro (vector (list (if (> page 1) 'wheel-up 'wheel-down)
+                                       (posn-at-x-y 10 10 w))))
+      (gui-test--wait 0.6)
+      (gui-test--check "deck: after C-x 1 and View, the wheel turns the slide shown"
+                       (and (/= page (gui-test--pdf-page pbuf))
+                            before (not (eq before (funcall shown))))
+                       (list :page page (gui-test--pdf-page pbuf)
+                             :redrawn (not (eq before (funcall shown))))))
     ;; The user's habit: C-c C-c View, and C-c C-c LaTeX (save + AUCTeX's own run).
     (select-window (get-buffer-window (find-buffer-visiting master)))
     (setq texsync--last nil)
@@ -325,7 +352,11 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
                              (eq (selected-window) src-win))
             (let* ((anchor (texsync--pdf-point-at pwin texsync-pdf-anchor))
                    (target (texsync-paper-target pdf))
-                   (d (and target (gui-test--alignment-at pwin (car target) (cdr target)))))
+                   ;; a blank or structural line (between two paragraphs, at a
+                   ;; page break) is put at the anchor's height: measure that
+                   (d (if (texsync--structural-p (line-number-at-pos))
+                          (gui-test--alignment-at pwin (car anchor) (cdr anchor))
+                        (and target (gui-test--alignment-at pwin (car target) (cdr target))))))
               ;; Independent check: SyncTeX types point's line within 0.2 page of the
               ;; anchor (its text may start on the page before, if it wraps there).
               (gui-test--check "wheel over the PDF: point's line is typeset near the PDF's anchor"
@@ -392,6 +423,51 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
     (gui-test--check "paper: nothing logged as an error" (null (gui-test--errors-logged))
                      (gui-test--errors-logged))))
 
+(defun gui-test--book (dir)
+  "A book glued from two decks: View from a deck, cursor moves, real ctrl+clicks."
+  (let* ((texsync-glue t)                 ; off by default
+         (book (expand-file-name "book/book.tex" dir))
+         (d1 (expand-file-name "book/d1.tex" dir))
+         (d2 (expand-file-name "book/d2.tex" dir))
+         (view (texsync--pdf-file book)))
+    (gui-test--check "book: two parts" (equal (texsync--book-parts book) (list d1 d2)))
+    (texsync-compile book)
+    (gui-test--wait-for 120 (lambda () (and (not (process-live-p (gethash book texsync--processes)))
+                                            (file-exists-p view))))
+    (gui-test--check "book: the parts are built and glued" (= (texsync--pdf-pages view) 6))
+    (find-file d2)
+    (delete-other-windows)
+    (setq-local TeX-master "book")        ; as a .dir-locals.el would
+    (texsync-mode 1)
+    (gui-test--check "book: d2's main file is the book" (equal (texsync-master-file) book))
+    (gui-test--clear-messages)
+    (texsync-view)
+    (let* ((pbuf (find-buffer-visiting view))
+           (pwin (and pbuf (get-buffer-window pbuf)))
+           (src-win (selected-window)))
+      (gui-test--check "book: View shows the glued PDF" (and pwin t))
+      (dolist (case '((5 . 4) (9 . 5) (15 . 6)))
+        (gui-test--goto (car case))
+        (gui-test--wait 0.5)
+        (gui-test--check (format "book: d2 line %d shows glued page %d" (car case) (cdr case))
+                         (= (gui-test--pdf-page pbuf) (cdr case)) (gui-test--pdf-page pbuf)))
+      ;; real ctrl+clicks on glued pages: the part's source, the frame clicked
+      (dolist (case '(("Second deck, first slide" "d2.tex" "Two A")
+                      ("First deck, second slide" "d1.tex" "One B")
+                      ("verbatim text" "d2.tex" "Two C")))
+        (select-window src-win)
+        (let ((r (gui-test--ctrl-click (selected-window) pwin view (car case) t)))
+          (gui-test--check (format "book: ctrl+click on \"%s\" goes to %s, frame %s"
+                                   (car case) (nth 1 case) (nth 2 case))
+                           (and (equal (car r) (nth 1 case))
+                                (string-match-p (regexp-quote (nth 2 case)) (cdr r)))
+                           r))
+        ;; back to d2 in the source window for the next click
+        (select-window src-win)
+        (switch-to-buffer (find-buffer-visiting d2))))
+    (gui-test--check "book: nothing logged as an error" (null (gui-test--errors-logged))
+                     (gui-test--errors-logged))))
+
 (defun gui-test-run ()
   ;; A tiling window manager would size the window by what else is open.
   (set-frame-parameter nil 'fullscreen 'fullboth)
@@ -403,7 +479,8 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
       (condition-case err
           (handler-bind ((error (lambda (_) (setq bt (backtrace-to-string)))))
             (gui-test--deck dir)
-            (gui-test--paper dir))
+            (gui-test--paper dir)
+            (gui-test--book dir))
         (error (gui-test--check "no Lisp error" nil (error-message-string err))
                (gui-test--say "%s" (substring bt 0 (min 3000 (length bt)))))))
     (gui-test--say "%d failed" gui-test--failures)

@@ -618,5 +618,107 @@ in it with the pane at the end, a header saying building, then built."
       (ignore-errors (pdf-info-close (texsync--pdf-file master)))
       (delete-directory dir t))))
 
+(ert-deftest texsync-test-book-parts-many ()
+  "All parts of a book with many, read with nothing cached (the check that a
+part is a whole document searches too, and must not move the parser)."
+  (let* ((texsync-glue t)
+         (dir (file-name-as-directory (make-temp-file "texsync-book-" t)))
+         (names (mapcar (lambda (i) (format "deck-%d---with-a-long-name" i)) (number-sequence 1 7))))
+    (dolist (n names)
+      (with-temp-file (expand-file-name (concat n ".tex") dir)
+        ;; \\begin{document} far into the file, after a long comment (as in
+        ;; real decks): a search there used to move the parser past later parts
+        (insert "\\documentclass{beamer}\n\\input{header}\n"
+                (mapconcat (lambda (_) "% a long comment line about this deck, its plan and its sources")
+                           (number-sequence 1 40) "\n")
+                "\n\\begin{document}\n"
+                "\\begin{frame}{X}\n  x\n\\end{frame}\n\\end{document}\n")))
+    (with-temp-file (expand-file-name "header.tex" dir) (insert "\\usepackage{amsmath}\n"))
+    (with-temp-file (expand-file-name "all.tex" dir)
+      (insert "\\documentclass{beamer}\n\\input{header}\n\\usepackage{docmute}\n"
+              "\\newcommand{\\deck}[1]{\\part{#1}\\input{#1}}\n\\begin{document}\n"
+              (mapconcat (lambda (n) (format "\\deck{%s}" n)) names "\n")
+              "\n% \\deck{commented-out}\n\\end{document}\n"))
+    (clrhash texsync--file-cache)
+    (should (equal (mapcar #'file-name-base (texsync--book-parts (expand-file-name "all.tex" dir)))
+                   names))
+    (delete-directory dir t)))
+
+(defun texsync-test--build-book (book &optional file)
+  "Build BOOK (only FILE's part when FILE is one) and wait until it is glued."
+  (texsync-compile book nil file)
+  (let ((end (+ (float-time) 120)))
+    (while (and (or (process-live-p (gethash book texsync--processes))
+                    (gethash book texsync--book-pending))
+                (< (float-time) end))
+      (accept-process-output nil 0.1))
+    (accept-process-output nil 0.2)))
+
+(ert-deftest texsync-test-book ()
+  "A book glued from two decks: its parts, the glued PDF and its layout,
+lookups both ways through the parts (a verbatim slide included), the
+combined frame ranges, a save rebuilding only its part, a restart.
+Books are glued only when `texsync-glue' is on; it is off by default."
+  (should-not (default-value 'texsync-glue))
+  (let* ((texsync-glue t)
+         (dir (texsync-test--copy-fixtures))
+         (book (expand-file-name "book/book.tex" dir))
+         (d1 (expand-file-name "book/d1.tex" dir))
+         (d2 (expand-file-name "book/d2.tex" dir))
+         (view (texsync--pdf-file book)))
+    (unwind-protect
+        (progn
+          ;; parts: the whole documents its body includes, in order
+          (should (equal (texsync--book-parts book) (list d1 d2)))
+          (should-not (texsync--book-parts d1))
+          (should-not (texsync--book-parts (expand-file-name "paper/main.tex" dir)))
+          (should-not (texsync--book-parts (expand-file-name "lectures/lecture.tex" dir)))
+          (let ((texsync-glue nil)) (should-not (texsync--book-parts book)))
+          ;; build: every part, then glued
+          (texsync-test--build-book book)
+          (should (string-match-p "built and glued" (with-current-buffer (texsync--log-buffer book)
+                                                      (buffer-string))))
+          (should (file-exists-p view))
+          (should (= (texsync--pdf-pages view) 6))
+          (should (equal (mapcar (lambda (l) (list (nth 0 l) (nth 1 l) (nth 2 l)))
+                                 (texsync--book-layout book))
+                         (list (list d1 1 3) (list d2 4 3))))
+          (should (equal (texsync--nav-ranges book) '((1 . 1) (2 . 3) (4 . 4) (5 . 5) (6 . 6))))
+          (should (texsync--ensure-synctex book view))
+          ;; source -> glued PDF: each frame's slide, shifted by its part's offset
+          (dolist (case (list (list d1 5 1) (list d1 10 3) (list d2 5 4) (list d2 9 5) (list d2 15 6)))
+            (texsync-test--in-file (car case)
+              (should (equal (texsync-master-file) (car case)))   ; no TeX-master in the fixture
+              (texsync-test--goto-line (nth 1 case))
+              (should (equal (list (nth 1 case) (texsync-beamer-target view book))
+                             (list (nth 1 case) (nth 2 case))))))
+          ;; glued PDF -> source: the part's file, the frame's first line
+          (should (equal (mapcar (lambda (p) (texsync-beamer-source book view p)) '(1 2 3 4 5 6))
+                         (list (cons d1 4) (cons d1 8) (cons d1 8)
+                               (cons d2 4) (cons d2 8) (cons d2 12))))   ; 6: verbatim (.vrb)
+          ;; a save of d1 rebuilds d1 only
+          (let ((m2 (texsync--mtime (texsync--built-pdf d2)))
+                (m1 (texsync--mtime (texsync--built-pdf d1)))
+                (v (texsync--mtime view)))
+            (texsync-test--in-file d1
+              (goto-char (point-min))
+              (re-search-forward "First deck, first slide\\.")
+              (insert " Edited.")
+              (let ((texsync-compile-on-save nil)) (save-buffer)))
+            (texsync-test--build-book book d1)
+            (should-not (equal m1 (texsync--mtime (texsync--built-pdf d1))))
+            (should (equal m2 (texsync--mtime (texsync--built-pdf d2))))
+            (should-not (equal v (texsync--mtime view))))
+          ;; a restart: the layout comes back from the sidecar
+          (clrhash texsync--file-cache)
+          (clrhash texsync--memo)
+          (should (equal (cdr (texsync--book-part-at book 5)) 2))
+          (should (equal (texsync-beamer-source book view 5) (cons d2 8))))
+      (clrhash texsync--builds)
+      (clrhash texsync--failed)
+      (dolist (f (list view (texsync--pdf-file d1) (texsync--pdf-file d2)))
+        (ignore-errors (pdf-info-close f)))
+      (delete-directory dir t))))
+
 (provide 'texsync-test)
 ;;; texsync-test.el ends here
