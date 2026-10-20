@@ -20,8 +20,27 @@ was called `texsync` until 2026-10-03.
 
 Needs graphical Emacs (not `emacs -nw`), [pdf-tools](https://github.com/vedang/pdf-tools)
 with continuous scrolling (`pdf-roll.el`), AUCTeX and latexmk. Tested with Emacs 31.1 (pgtk,
-Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live. How it works is told in
-the comments of `texsync.el`.
+Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live.
+
+## How it works
+
+- **SyncTeX, through pdf-tools.** latexmk builds with `-synctex=1`, and every jump between the
+  source and the PDF is a SyncTeX search answered by pdf-tools' `epdfinfo`.
+- **Beamer goes by frame, not by line.** Beamer typesets a frame's body only at `\end{frame}`, so
+  every SyncTeX record of a frame points to that line, and a line near a frame's top would land a
+  slide early. texsync searches with the `\end{frame}` of the frame around point instead: on a
+  73-slide deck that was right for every frame, where line by line was right for about half of
+  the lines.
+- **Other documents go by height.** The line at point is shown at the same height in the PDF as
+  in the source. Lines with unreliable records (blank lines, `\begin`/`\end`, `\label`,
+  `\input`…) borrow the position of a nearby line of text.
+- **The window you last acted on leads**, decided after every command (for the mouse wheel, the
+  window under the pointer); the other one follows after a short pause (`texsync-sync-delay`).
+  From the PDF, the source follows the line typeset at `texsync-pdf-anchor` (a third of the way
+  down).
+- **The PDF shown is a copy.** pdflatex rewrites its PDF in place while it runs, and pdf-tools
+  reading it then shows garbage. So texsync shows a copy (in `texsync-view-directory`) and
+  replaces it only when a build has finished, whoever started that build.
 
 ## Install
 
