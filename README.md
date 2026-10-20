@@ -20,8 +20,8 @@ was called `texsync` until 2026-10-03.
 
 Needs graphical Emacs (not `emacs -nw`), [pdf-tools](https://github.com/vedang/pdf-tools)
 with continuous scrolling (`pdf-roll.el`), AUCTeX and latexmk. Tested with Emacs 31.1 (pgtk,
-Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live. How it works:
-[archive/DESIGN.md](strategium/archive/DESIGN.md); what was tried and measured: [archive/RESEARCH_LOG.md](strategium/archive/RESEARCH_LOG.md).
+Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live. How it works is told in
+the comments of `texsync.el`.
 
 ## Install
 
