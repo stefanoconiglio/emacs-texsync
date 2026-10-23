@@ -1,4 +1,4 @@
-# emacs-dyad
+# emacs-latex-dyad
 
 Emacs minor mode: LaTeX source on the left, its PDF (pdf-tools) on the right, kept in step.
 The package and its modes are called `dyad` (`dyad.el`, `dyad-mode`), after the two bound
@@ -46,7 +46,7 @@ Wayland), pdf-tools 20260102 from MELPA, AUCTeX 14.1.2 and TeX Live.
 ## Install
 
 ```
-git clone https://github.com/stefanoconiglio/emacs-dyad ~/repos/emacs-dyad
+git clone https://github.com/stefanoconiglio/emacs-latex-dyad ~/repos/emacs-latex-dyad
 ```
 
 then the Setup below, with that path.
@@ -54,7 +54,7 @@ then the Setup below, with that path.
 ## Try it
 
 ```
-/usr/bin/emacs -Q -l ~/repos/emacs-dyad/try.el FILE.tex
+/usr/bin/emacs -Q -l ~/repos/emacs-latex-dyad/try.el FILE.tex
 ```
 
 Then `C-c C-v`. Your own init file is not loaded.
@@ -62,7 +62,7 @@ Then `C-c C-v`. Your own init file is not loaded.
 ## Setup
 
 ```elisp
-(add-to-list 'load-path "~/repos/emacs-dyad")  ; your clone
+(add-to-list 'load-path "~/repos/emacs-latex-dyad")  ; your clone
 (require 'dyad)
 (pdf-tools-install :no-query)
 ;; dyad in graphical frames; terminal Emacs keeps its usual viewer

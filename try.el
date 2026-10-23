@@ -1,6 +1,6 @@
 ;;; try.el --- Try dyad without touching your init file  -*- lexical-binding: t -*-
 
-;; /usr/bin/emacs -Q -l ~/repos/emacs-dyad/try.el FILE.tex
+;; /usr/bin/emacs -Q -l ~/repos/emacs-latex-dyad/try.el FILE.tex
 ;;
 ;; Opens FILE.tex with dyad-mode on.
 ;; C-c C-v shows the PDF on the right (compiling first if build/ has none).
