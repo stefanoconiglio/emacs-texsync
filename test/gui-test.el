@@ -1,10 +1,10 @@
-;;; gui-test.el --- texsync in a graphical Emacs  -*- lexical-binding: t -*-
+;;; gui-test.el --- dyad in a graphical Emacs  -*- lexical-binding: t -*-
 
 ;; Run with `make gui-test' (needs a graphical display; a window opens for
 ;; about half a minute).  It exercises what batch tests cannot: commands
 ;; going through the command loop (`post-command-hook', timers), pdf-tools
 ;; windows in continuous mode, and the compile -> revert -> re-sync path.
-;; Results go to the file named by $TEXSYNC_GUI_LOG; the exit status is the
+;; Results go to the file named by $DYAD_GUI_LOG; the exit status is the
 ;; number of failed checks.
 
 ;;; Code:
@@ -14,9 +14,9 @@
 (package-initialize)
 (defconst gui-test--dir (file-name-directory load-file-name))
 (add-to-list 'load-path (expand-file-name ".." gui-test--dir))
-(require 'texsync)
+(require 'dyad)
 ;; The copies of the PDFs shown go to a temporary directory, not the user's cache.
-(setq texsync-view-directory (make-temp-file "texsync-gui-views-" t))
+(setq dyad-view-directory (make-temp-file "dyad-gui-views-" t))
 (require 'tex nil t)
 
 (defvar gui-test--failures 0)
@@ -53,10 +53,10 @@ from the window manager) is pending, and then skips redisplay."
 
 (defun gui-test--latexmk (master)
   (let ((default-directory (file-name-directory master)))
-    (make-directory texsync-output-dir t)
-    (zerop (apply #'call-process (car texsync-latexmk-command) nil nil nil
-                  (append (cdr texsync-latexmk-command)
-                          (list (concat "-outdir=" texsync-output-dir)
+    (make-directory dyad-output-dir t)
+    (zerop (apply #'call-process (car dyad-latexmk-command) nil nil nil
+                  (append (cdr dyad-latexmk-command)
+                          (list (concat "-outdir=" dyad-output-dir)
                                 (file-name-nondirectory master)))))))
 
 (defun gui-test--keys (keys)
@@ -74,9 +74,9 @@ from the window manager) is pending, and then skips redisplay."
   "Error lines in *Messages* since the last clear."
   (with-current-buffer (messages-buffer)
     (cl-remove-if-not
-     (lambda (l) (and (string-match-p "error\\|Error\\|texsync:" l)
-                      ;; texsync's own news, not errors
-                      (not (string-match-p "\\`texsync: built " l))))
+     (lambda (l) (and (string-match-p "error\\|Error\\|dyad:" l)
+                      ;; dyad's own news, not errors
+                      (not (string-match-p "\\`dyad: built " l))))
      (split-string (buffer-string) "\n" t))))
 
 (defun gui-test--pdf-page (pbuf)
@@ -95,7 +95,7 @@ nil when WORDS is not on a page shown in PWIN."
   (let* ((hit (car (pdf-info-search-string words nil pdf)))
          (page (alist-get 'page hit))
          (y (nth 1 (car (alist-get 'edges hit))))
-         (frac (texsync--point-fraction))
+         (frac (dyad--point-fraction))
          (src-px (* frac (window-body-height nil t))))
     (with-selected-window pwin
       (let* ((cur (pdf-view-current-page))
@@ -157,17 +157,17 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
 
 (defun gui-test--alignment-at (pwin page y)
   "Pixel distance between height Y of PAGE in PWIN and point's line in its window."
-  (let* ((frac (texsync--point-fraction))
+  (let* ((frac (dyad--point-fraction))
          (src-px (and frac (* frac (window-body-height nil t)))))
     (when frac
       (with-selected-window pwin
         (let* ((cur (pdf-view-current-page))
                (vscroll (window-vscroll nil t))
-               (pdf-px (cond ((= page cur) (- (* y (texsync--page-height pwin page)) vscroll))
+               (pdf-px (cond ((= page cur) (- (* y (dyad--page-height pwin page)) vscroll))
                              ((= page (1+ cur))
-                              (+ (- (texsync--page-height pwin cur) vscroll)
+                              (+ (- (dyad--page-height pwin cur) vscroll)
                                  pdf-roll-vertical-margin
-                                 (* y (texsync--page-height pwin page)))))))
+                                 (* y (dyad--page-height pwin page)))))))
           (cond ((null pdf-px) nil)
                 ;; the source window cannot scroll above the buffer's first line
                 ((and (= (window-start (frame-first-window)) 1) (< src-px pdf-px)) 0)
@@ -175,18 +175,18 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
 
 (defun gui-test--deck (dir)
   (let* ((master (expand-file-name "deck.tex" dir))
-         (pdf (texsync--pdf-file master)))
+         (pdf (dyad--pdf-file master)))
     (gui-test--check "deck compiles" (gui-test--latexmk master))
     (find-file master)
     (delete-other-windows)
-    (texsync-mode 1)
+    (dyad-mode 1)
     (gui-test--clear-messages)
-    (texsync-view)
+    (dyad-view)
     (let ((pbuf (find-buffer-visiting pdf)))
       (gui-test--check "View shows the deck PDF beside the source"
                        (and pbuf (get-buffer-window pbuf)
                             (eq (window-buffer (selected-window)) (current-buffer))))
-      (let ((texsync-beamer-overlay 'last))
+      (let ((dyad-beamer-overlay 'last))
         (dolist (case '((8 . 1) (16 . 4) (23 . 5) (29 . 6) (14 . 4) (10 . 1)))
           (gui-test--goto (car case))
           (gui-test--wait 0.5)
@@ -241,7 +241,7 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
     ;; (vedang/pdf-tools#349).
     (select-window (get-buffer-window (find-buffer-visiting master)))
     (gui-test--keys "C-x 1")
-    (gui-test--keys "M-x texsync-view RET")
+    (gui-test--keys "M-x dyad-view RET")
     (gui-test--wait 1)
     (let* ((pbuf (find-buffer-visiting pdf))
            (w (get-buffer-window pbuf))
@@ -262,46 +262,46 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
                              :redrawn (not (eq before (funcall shown))))))
     ;; The user's habit: C-c C-c View, and C-c C-c LaTeX (save + AUCTeX's own run).
     (select-window (get-buffer-window (find-buffer-visiting master)))
-    (setq texsync--last nil)
+    (setq dyad--last nil)
     (gui-test--keys "C-c C-c View RET")
     (gui-test--wait 0.7)
-    (gui-test--check "C-c C-c View shows the PDF through texsync" texsync--last texsync--last)
-    (let ((overlap nil) (seen-auctex nil) (texsync-after nil))
+    (gui-test--check "C-c C-c View shows the PDF through dyad" dyad--last dyad--last)
+    (let ((overlap nil) (seen-auctex nil) (dyad-after nil))
       (goto-char (point-max))
       (insert "\n")
       (setq-local TeX-save-query nil)     ; as in the user's config: save without asking
       (gui-test--keys "C-c C-c LaTeX RET")
       (gui-test--wait-for
        40 (lambda ()
-            (let ((a (texsync--auctex-process))
-                  (b (process-live-p (gethash master texsync--processes))))
+            (let ((a (dyad--auctex-process))
+                  (b (process-live-p (gethash master dyad--processes))))
               (when (and a b) (setq overlap t))
               (when a (setq seen-auctex t))
-              (when (and b seen-auctex (not a)) (setq texsync-after t)))
-            (and (not (texsync--auctex-process))
-                 (not (process-live-p (gethash master texsync--processes)))
+              (when (and b seen-auctex (not a)) (setq dyad-after t)))
+            (and (not (dyad--auctex-process))
+                 (not (process-live-p (gethash master dyad--processes)))
                  (not (buffer-modified-p)))))
       (gui-test--wait-for 5 (lambda ()
-                              (when (process-live-p (gethash master texsync--processes))
-                                (setq texsync-after t))))
-      (gui-test--wait-for 40 (lambda () (not (process-live-p (gethash master texsync--processes)))))
-      (gui-test--check "C-c C-c LaTeX: AUCTeX runs, then texsync, never both at once"
-                       (and seen-auctex texsync-after (not overlap))
-                       (list :auctex seen-auctex :texsync-after texsync-after :overlap overlap)))
+                              (when (process-live-p (gethash master dyad--processes))
+                                (setq dyad-after t))))
+      (gui-test--wait-for 40 (lambda () (not (process-live-p (gethash master dyad--processes)))))
+      (gui-test--check "C-c C-c LaTeX: AUCTeX runs, then dyad, never both at once"
+                       (and seen-auctex dyad-after (not overlap))
+                       (list :auctex seen-auctex :dyad-after dyad-after :overlap overlap)))
     (gui-test--check "deck: nothing logged as an error" (null (gui-test--errors-logged))
                      (gui-test--errors-logged))))
 
 (defun gui-test--paper (dir)
   (let* ((master (expand-file-name "paper/main.tex" dir))
          (sec (expand-file-name "paper/sec.tex" dir))
-         (pdf (texsync--pdf-file master)))
+         (pdf (dyad--pdf-file master)))
     (gui-test--check "paper compiles" (gui-test--latexmk master))
     (find-file sec)
     (delete-other-windows)
-    (texsync-mode 1)
-    (gui-test--check "sec.tex finds its main file" (equal (texsync-master-file) master))
+    (dyad-mode 1)
+    (gui-test--check "sec.tex finds its main file" (equal (dyad-master-file) master))
     (gui-test--clear-messages)
-    (texsync-view)
+    (dyad-view)
     (let* ((pbuf (find-buffer-visiting pdf))
            (pwin (get-buffer-window pbuf)))
       (gui-test--check "paper PDF in continuous mode"
@@ -335,26 +335,26 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
           (aligned "after C-v"))
         ;; The PDF leads: wheel over the PDF while the source window is selected.
         (let ((src-win (selected-window)))
-          (setq texsync-trace nil)
+          (setq dyad-trace nil)
           (gui-test--wheel pwin 6)
-          (let ((after (texsync--pdf-state pwin)))
+          (let ((after (dyad--pdf-state pwin)))
             (gui-test--wait 0.7)
-            (gui-test--say "   trace: %S" (reverse texsync-trace))
+            (gui-test--say "   trace: %S" (reverse dyad-trace))
             (gui-test--say "   source window: start line %d, point line %d, point visible %S"
                            (line-number-at-pos (window-start src-win))
                            (line-number-at-pos (window-point src-win))
                            (pos-visible-in-window-p (window-point src-win) src-win))
-            (setq texsync-trace 'off)
+            (setq dyad-trace 'off)
             (gui-test--check "wheel over the PDF: it stays where it was scrolled"
-                             (equal (texsync--pdf-state pwin) after)
-                             (list after (texsync--pdf-state pwin)))
+                             (equal (dyad--pdf-state pwin) after)
+                             (list after (dyad--pdf-state pwin)))
             (gui-test--check "wheel over the PDF: the source window keeps the focus"
                              (eq (selected-window) src-win))
-            (let* ((anchor (texsync--pdf-point-at pwin texsync-pdf-anchor))
-                   (target (texsync-paper-target pdf))
+            (let* ((anchor (dyad--pdf-point-at pwin dyad-pdf-anchor))
+                   (target (dyad-paper-target pdf))
                    ;; a blank or structural line (between two paragraphs, at a
                    ;; page break) is put at the anchor's height: measure that
-                   (d (if (texsync--structural-p (line-number-at-pos))
+                   (d (if (dyad--structural-p (line-number-at-pos))
                           (gui-test--alignment-at pwin (car anchor) (cdr anchor))
                         (and target (gui-test--alignment-at pwin (car target) (cdr target))))))
               ;; Independent check: SyncTeX types point's line within 0.2 page of the
@@ -376,44 +376,44 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
         ;; Ctrl+click with real mouse events.
         (let ((src-win (selected-window))
               (words "Paragraph 4 sentence 2"))
-          (with-current-buffer pbuf (texsync-pdf-mode -1))
+          (with-current-buffer pbuf (dyad-pdf-mode -1))
           (let ((r (gui-test--ctrl-click src-win pwin pdf words t)))
-            (gui-test--check "without texsync-pdf-mode a wobbly ctrl+click is lost (pdf-tools)"
+            (gui-test--check "without dyad-pdf-mode a wobbly ctrl+click is lost (pdf-tools)"
                              (not (string-prefix-p words (cdr r))) r))
-          (with-current-buffer pbuf (texsync-pdf-mode 1))
+          (with-current-buffer pbuf (dyad-pdf-mode 1))
           (dolist (wobble '(nil t))
             (select-window src-win)
             (goto-char (point-min))
-            (setq texsync-trace nil)
+            (setq dyad-trace nil)
             (let ((r (gui-test--ctrl-click src-win pwin pdf words wobble)))
-              (gui-test--say "   trace: %S" (reverse texsync-trace))
-              (setq texsync-trace 'off)
+              (gui-test--say "   trace: %S" (reverse dyad-trace))
+              (setq dyad-trace 'off)
               (gui-test--check (format "ctrl+click%s on \"%s\" goes to its source line"
                                        (if wobble " with a wobble" "") words)
                                (and (equal (car r) "sec.tex") (string-prefix-p words (cdr r)))
                                r))))
         (gui-test--goto (gui-test--line-of "^Paragraph 10 sentence 4"))
         (gui-test--wait 0.5)
-        ;; Edit, pause, and let texsync save, compile, reload and re-sync (idle
+        ;; Edit, pause, and let dyad save, compile, reload and re-sync (idle
         ;; compiling is off by default; the edits are made with it on).
         (let ((mtime (file-attribute-modification-time (file-attributes pdf))))
-          (let ((texsync-compile-idle-delay 1.5))
+          (let ((dyad-compile-idle-delay 1.5))
             (save-excursion
               (goto-char (point-min))
               (forward-line 1)
               (dotimes (k 10)
                 (insert (format "Inserted sentence %d for the reload test, enough words for a line.\n" k)))))
           (gui-test--check
-           "with texsync-compile-idle-delay set, a pause after an edit saves and recompiles"
+           "with dyad-compile-idle-delay set, a pause after an edit saves and recompiles"
            (gui-test--wait-for
             30 (lambda ()
                  (and (not (buffer-modified-p))
-                      (zerop (hash-table-count texsync--processes))
+                      (zerop (hash-table-count dyad--processes))
                       (not (equal mtime (file-attribute-modification-time
                                          (file-attributes pdf)))))))
            (list :buffer (buffer-name) :selected (buffer-name (window-buffer (selected-window)))
-                 :modified (buffer-modified-p) :texsync texsync-mode
-                 :running (hash-table-count texsync--processes)
+                 :modified (buffer-modified-p) :dyad dyad-mode
+                 :running (hash-table-count dyad--processes)
                  :pdf-changed (not (equal mtime (file-attribute-modification-time
                                                  (file-attributes pdf)))))))
         (gui-test--wait 1.0)
@@ -425,23 +425,23 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
 
 (defun gui-test--book (dir)
   "A book glued from two decks: View from a deck, cursor moves, real ctrl+clicks."
-  (let* ((texsync-glue t)                 ; off by default
+  (let* ((dyad-glue t)                 ; off by default
          (book (expand-file-name "book/book.tex" dir))
          (d1 (expand-file-name "book/d1.tex" dir))
          (d2 (expand-file-name "book/d2.tex" dir))
-         (view (texsync--pdf-file book)))
-    (gui-test--check "book: two parts" (equal (texsync--book-parts book) (list d1 d2)))
-    (texsync-compile book)
-    (gui-test--wait-for 120 (lambda () (and (not (process-live-p (gethash book texsync--processes)))
+         (view (dyad--pdf-file book)))
+    (gui-test--check "book: two parts" (equal (dyad--book-parts book) (list d1 d2)))
+    (dyad-compile book)
+    (gui-test--wait-for 120 (lambda () (and (not (process-live-p (gethash book dyad--processes)))
                                             (file-exists-p view))))
-    (gui-test--check "book: the parts are built and glued" (= (texsync--pdf-pages view) 6))
+    (gui-test--check "book: the parts are built and glued" (= (dyad--pdf-pages view) 6))
     (find-file d2)
     (delete-other-windows)
     (setq-local TeX-master "book")        ; as a .dir-locals.el would
-    (texsync-mode 1)
-    (gui-test--check "book: d2's main file is the book" (equal (texsync-master-file) book))
+    (dyad-mode 1)
+    (gui-test--check "book: d2's main file is the book" (equal (dyad-master-file) book))
     (gui-test--clear-messages)
-    (texsync-view)
+    (dyad-view)
     (let* ((pbuf (find-buffer-visiting view))
            (pwin (and pbuf (get-buffer-window pbuf)))
            (src-win (selected-window)))
@@ -473,7 +473,7 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
   (set-frame-parameter nil 'fullscreen 'fullboth)
   (gui-test--wait 1.5)
   (gui-test--say "frame %dx%d px" (frame-pixel-width) (frame-pixel-height))
-  (let ((dir (file-name-as-directory (make-temp-file "texsync-gui-" t))))
+  (let ((dir (file-name-as-directory (make-temp-file "dyad-gui-" t))))
     (copy-directory (expand-file-name "fixtures" gui-test--dir) dir nil t t)
     (let (bt)
       (condition-case err
@@ -484,7 +484,7 @@ Return (BUFFER-NAME . LINE-TEXT) of the selected window afterwards."
         (error (gui-test--check "no Lisp error" nil (error-message-string err))
                (gui-test--say "%s" (substring bt 0 (min 3000 (length bt)))))))
     (gui-test--say "%d failed" gui-test--failures)
-    (with-temp-file (or (getenv "TEXSYNC_GUI_LOG") "/dev/stderr")
+    (with-temp-file (or (getenv "DYAD_GUI_LOG") "/dev/stderr")
       (insert (mapconcat #'identity (reverse gui-test--log) "\n") "\n"))
     (dolist (b (buffer-list))
       (with-current-buffer b (set-buffer-modified-p nil)))
