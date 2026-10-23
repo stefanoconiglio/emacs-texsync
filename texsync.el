@@ -1584,6 +1584,21 @@ latexmk may hold the PDF up to date."
           (texsync-compile master t))
         nil))))
 
+(defun texsync--refused-retry-p (proc)
+  "Non-nil when latexmk run PROC refused to retry an earlier failed run.
+After a failed run, with the sources unchanged, latexmk answers \"Nothing to
+do\" and fails again at once, \"gave an error in previous invocation\";
+only a forced run (-g) tries again."
+  (when (buffer-live-p (process-buffer proc))
+    (with-current-buffer (process-buffer proc)
+      (save-excursion
+        (goto-char (or (process-get proc 'texsync-start) (point-min)))
+        (search-forward "gave an error in previous invocation of latexmk" nil t)))))
+
+(defconst texsync--retry-note
+  "latexmk would not retry its earlier failed run (sources unchanged): forcing a rebuild"
+  "The log's line when a refused retry is forced.")
+
 (defun texsync-compile (&optional master force file)
   "Compile MASTER (default: this buffer's main file) with latexmk, asynchronously.
 A request while a compile runs queues one more run after it.  With FORCE
@@ -1623,8 +1638,9 @@ shown stays the glued one."
       (message "texsync: building the whole of %s into %s"
                (file-name-nondirectory master) (texsync--built-pdf master)))))
 
-(defun texsync--compile-single (master force)
-  "Compile MASTER with latexmk as one document; see `texsync-compile'."
+(defun texsync--compile-single (master force &optional note)
+  "Compile MASTER with latexmk as one document; see `texsync-compile'.
+NOTE, a line, goes into the log before the command."
   (progn
     (if (process-live-p (gethash master texsync--processes))
         (puthash master t texsync--pending)
@@ -1638,6 +1654,8 @@ shown stays the glued one."
         (with-current-buffer buf
           (let ((inhibit-read-only t))
             (erase-buffer)
+            (when note
+              (insert (format "%s %s\n" (format-time-string "%H:%M:%S") note)))
             (insert (format "%s $ %s\n" (format-time-string "%H:%M:%S")
                             (mapconcat #'shell-quote-argument command " ")))))
         (puthash master
@@ -1647,10 +1665,12 @@ shown stays the glued one."
                   :noquery t
                   :command command
                   :filter #'texsync--log-filter
-                  :sentinel (lambda (proc _event) (texsync--compiled master proc)))
+                  :sentinel (lambda (proc _event) (texsync--compiled master proc force)))
                  texsync--processes)
         (with-current-buffer buf
-          (set-marker (process-mark (gethash master texsync--processes)) (point-max)))
+          (let ((proc (gethash master texsync--processes)))
+            (set-marker (process-mark proc) (point-max))
+            (process-put proc 'texsync-start (point-max))))
         (texsync--build-started master t)
         ;; the log pane under the PDF, when the PDF is shown
         (when-let* ((pbuf (find-buffer-visiting (texsync--pdf-file master)))
@@ -1681,8 +1701,9 @@ book builds is kept and built after it."
       (texsync--log-window pwin book t))
     (texsync--book-step book force parts)))
 
-(defun texsync--book-step (book force queue)
-  "Build the first part of QUEUE, then the rest; at the end, show BOOK."
+(defun texsync--book-step (book force queue &optional force-first)
+  "Build the first part of QUEUE, then the rest; at the end, show BOOK.
+FORCE-FIRST forces the first part only (a refused retry, forced)."
   (cond
    ((null queue) (texsync--book-done book t))
    ((texsync--part-busy-p (car queue))
@@ -1695,8 +1716,9 @@ book builds is kept and built after it."
     (let* ((part (car queue))
            (default-directory (file-name-directory part))
            (log (texsync--log-buffer book))
+           (forced (or force force-first))
            (command (append texsync-latexmk-command
-                            (and force '("-g"))
+                            (and forced '("-g"))
                             (list (concat "-outdir=" texsync-output-dir)
                                   (file-name-nondirectory part)))))
       (make-directory texsync-output-dir t)
@@ -1711,14 +1733,22 @@ book builds is kept and built after it."
                    :sentinel
                    (lambda (proc _event)
                      (when (memq (process-status proc) '(exit signal))
-                       (if (and (eq (process-status proc) 'exit)
-                                (zerop (process-exit-status proc)))
-                           (texsync--book-step book force (cdr queue))
+                       (cond
+                        ((and (eq (process-status proc) 'exit)
+                              (zerop (process-exit-status proc)))
+                         (texsync--book-step book force (cdr queue)))
+                        ((and (not forced) (texsync--refused-retry-p proc))
+                         (texsync--log-append book (format "%s %s\n" (format-time-string "%H:%M:%S")
+                                                           texsync--retry-note))
+                         (texsync--book-step book force queue t))
+                        (t
                          (texsync--log-append
                           book (format "%s %s FAILED (exit %s)\n" (format-time-string "%H:%M:%S")
                                        (file-name-nondirectory part) (process-exit-status proc)))
-                         (texsync--book-done book nil)))))))
-        (with-current-buffer log (set-marker (process-mark proc) (point-max)))
+                         (texsync--book-done book nil))))))))
+        (with-current-buffer log
+          (set-marker (process-mark proc) (point-max))
+          (process-put proc 'texsync-start (point-max)))
         (puthash book proc texsync--processes))))))
 
 (defun texsync--book-done (book ok)
@@ -1741,26 +1771,35 @@ Then build what was asked for meanwhile."
     (remhash book texsync--book-pending)
     (texsync--compile-book book nil more)))
 
-(defun texsync--compiled (master proc)
-  "Handle the end of latexmk run PROC on MASTER."
+(defun texsync--compiled (master proc &optional forced)
+  "Handle the end of latexmk run PROC on MASTER (FORCED: run with -g).
+A run that latexmk refused to retry is run again, forced, once."
   (when (memq (process-status proc) '(exit signal))
     (remhash master texsync--processes)
-    (let* ((ok (and (eq (process-status proc) 'exit) (zerop (process-exit-status proc))))
-           (secs (texsync--build-ended master ok (process-buffer proc))))
-      (texsync--log-append
-       master (format "\n%s --- %s%s ---\n" (format-time-string "%H:%M:%S")
-                      (if ok "built" (format "FAILED (exit %s)" (process-exit-status proc)))
-                      (if secs (format " in %.1f s" secs) "")))
-      (if ok
-          (progn
-            (texsync--reload master)
-            (message "texsync: built %s%s" (file-name-nondirectory master)
-                     (if secs (format " in %.1f s" secs) "")))
-        (message "texsync: %s did not compile; see buffer %s"
-                 (file-name-nondirectory master) (buffer-name (process-buffer proc)))))
-    (when (gethash master texsync--pending)
-      (remhash master texsync--pending)
-      (texsync-compile master))))
+    (let ((ok (and (eq (process-status proc) 'exit) (zerop (process-exit-status proc)))))
+      (if (and (not ok) (not forced) (texsync--refused-retry-p proc))
+          ;; still Building in the mode lines; the queued request waits for it
+          (texsync--compile-single master t texsync--retry-note)
+        (texsync--compile-ended master proc ok)))))
+
+(defun texsync--compile-ended (master proc ok)
+  "Report the end of latexmk run PROC on MASTER (OK: it succeeded).
+Then run what was asked for meanwhile."
+  (let ((secs (texsync--build-ended master ok (process-buffer proc))))
+    (texsync--log-append
+     master (format "\n%s --- %s%s ---\n" (format-time-string "%H:%M:%S")
+                    (if ok "built" (format "FAILED (exit %s)" (process-exit-status proc)))
+                    (if secs (format " in %.1f s" secs) "")))
+    (if ok
+        (progn
+          (texsync--reload master)
+          (message "texsync: built %s%s" (file-name-nondirectory master)
+                   (if secs (format " in %.1f s" secs) "")))
+      (message "texsync: %s did not compile; see buffer %s"
+               (file-name-nondirectory master) (buffer-name (process-buffer proc)))))
+  (when (gethash master texsync--pending)
+    (remhash master texsync--pending)
+    (texsync-compile master)))
 
 (defun texsync--reload (master)
   "Show MASTER's new build: copy it to the PDF shown, revert that, sync again."

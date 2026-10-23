@@ -577,6 +577,66 @@ one until a good one, and see builds by other programs through .synctex(busy)."
       (ignore-errors (pdf-info-close view))
       (delete-directory dir t))))
 
+(defun texsync-test--break (file)
+  "Put an undefined command before FILE's \\end{document} and save it."
+  (texsync-test--in-file file
+    (goto-char (point-max))
+    (re-search-backward "^\\\\end{document}")
+    (insert "\\undefinedcommand\n")
+    (let ((texsync-compile-on-save nil)) (save-buffer))))
+
+(ert-deftest texsync-test-refused-retry ()
+  "After a failed build, with the sources unchanged, latexmk refuses to try
+again (\"gave an error in previous invocation\"); texsync forces one rebuild,
+so the log shows the real errors, and a forced run that fails stops there.
+For one document and for a book's part."
+  (let* ((dir (texsync-test--copy-fixtures))
+         ;; a document with no bibliography: latexmk would rerun bibtex
+         (master (let ((f (expand-file-name "plain.tex" dir)))
+                   (with-temp-file f
+                     (insert "\\documentclass{article}\n\\begin{document}\nText.\n\\end{document}\n"))
+                   f))
+         (log (lambda (m) (with-current-buffer (texsync--log-buffer m) (buffer-string))))
+         (build (lambda ()
+                  (texsync-compile master)
+                  (let ((end (+ (float-time) 120)))
+                    ;; the forced run starts from the first one's sentinel
+                    (while (and (gethash master texsync--builds) (< (float-time) end))
+                      (accept-process-output nil 0.1))))))
+    (unwind-protect
+        (progn
+          (texsync-test--break master)
+          ;; the first failed build is reported as it is
+          (funcall build)
+          (should-not (string-match-p (regexp-quote texsync--retry-note) (funcall log master)))
+          (should (string-match-p "FAILED" (funcall log master)))
+          ;; unchanged: latexmk refuses, texsync forces the rebuild, once
+          (funcall build)
+          (let ((text (funcall log master)))
+            (should (string-match-p (regexp-quote texsync--retry-note) text))
+            (should (string-match-p " -g " text))
+            (should (string-match-p "Undefined control sequence" text))
+            (should-not (string-match-p "gave an error in previous invocation" text))
+            (should (string-match-p "FAILED" text)))
+          (should (buffer-live-p (gethash master texsync--failed)))
+          (should-not (gethash master texsync--processes))
+          ;; a book: its broken part is forced, the others are not rebuilt
+          (let* ((texsync-glue t)
+                 (book (expand-file-name "book/book.tex" dir))
+                 (d2 (expand-file-name "book/d2.tex" dir)))
+            (texsync-test--break d2)
+            (texsync-test--build-book book)
+            (should-not (string-match-p (regexp-quote texsync--retry-note) (funcall log book)))
+            (texsync-test--build-book book)
+            (let ((text (funcall log book)))
+              (should (string-match-p (regexp-quote texsync--retry-note) text))
+              (should (string-match-p " -g -outdir[^ ]* d2\\.tex" text))
+              (should-not (string-match-p " -g -outdir[^ ]* d1\\.tex" text))
+              (should (string-match-p "d2.tex FAILED" text)))))
+      (clrhash texsync--builds)
+      (clrhash texsync--failed)
+      (delete-directory dir t))))
+
 (ert-deftest texsync-test-log-pane ()
   "The build log pane: made once under the PDF window, latexmk's output arriving
 in it with the pane at the end, a header saying building, then built."

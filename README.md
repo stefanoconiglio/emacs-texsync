@@ -93,7 +93,10 @@ Under the PDF, a small pane shows the build log: latexmk's output scrolls past w
 and its top line says **Building ... 12 s**, **Built in 6.2 s at 23:10** or **Build FAILED**.
 `(setq texsync-log-height nil)` removes the pane; a number sets its height in lines (6).
 While the PDF is being built, both mode lines also say **Building 12s** (counting); after a
-failed build they say **Build failed** until the next good one (click it for the build log). Builds
+failed build they say **Build failed** until the next good one (click it for the build log).
+Saving again after a failed build with nothing changed makes latexmk refuse to try again ("gave
+an error in previous invocation"); texsync then forces one rebuild, so the log shows the real
+errors, and a build that failed only because of a bad helper file in `build/` can succeed. Builds
 started by another program (VS Code, a terminal) show too, once texsync sees pdflatex running.
 
 The PDF's size: texsync fits a slide to its pane (`P` in the PDF) and a paper's page to the
